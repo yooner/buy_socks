@@ -53,7 +53,8 @@ def load_existing_results(excel_file: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        return pd.read_excel(excel_file)
+        df = pd.read_excel(excel_file, dtype={'编号': str})
+        return df
     except Exception as e:
         print(f"加载 Excel 失败: {e}")
         return pd.DataFrame()
@@ -143,7 +144,7 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
 
     for r in results:
         row = {
-            '编号': r['stock_code'],
+            '编号': str(r['stock_code']),
             '总收益率': r['total_return'] / 100 if r['total_return'] is not None else 0
         }
 
@@ -153,6 +154,8 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
         row['gittag'] = r.get('gittag', '')
 
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+    df['编号'] = df['编号'].astype(str)
 
     if os.path.exists(excel_file):
         try:
