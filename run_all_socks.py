@@ -194,12 +194,20 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
 
 
 def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, strategy_key: str):
-    """检查是否需要创建 git tag"""
+    """检查是否需要创建 git tag，并显示详细的收益率对比"""
     if previous_df is None or previous_df.empty:
         print("\n没有历史数据，跳过 git tag 检查")
         return
 
+    print("\n" + "="*60)
+    print("收益率对比详情")
+    print("="*60)
+    print(f"{'股票代码':<12} {'上次收益率':>14} {'本次收益率':>14} {'变化':>14}")
+    print("-"*60)
+
     improved_count = 0
+    declined_count = 0
+    unchanged_count = 0
     total_count = 0
 
     for r in results:
@@ -211,15 +219,32 @@ def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, str
 
         prev_row = previous_df[previous_df['编号'].astype(str) == stock_code]
         if prev_row.empty:
+            print(f"{stock_code:<12} {'无历史数据':>14} {current_return:>13.2f}% {'--':>14}")
             continue
 
         prev_return = prev_row['总收益率'].values[0]
         if pd.isna(prev_return):
+            print(f"{stock_code:<12} {'无历史数据':>14} {current_return:>13.2f}% {'--':>14}")
             continue
 
         total_count += 1
-        if current_return > prev_return:
+        change = current_return - prev_return
+
+        if change > 0.001:
             improved_count += 1
+            change_str = f"+{change:.2f}%"
+        elif change < -0.001:
+            declined_count += 1
+            change_str = f"{change:.2f}%"
+        else:
+            unchanged_count += 1
+            change_str = "0.00%"
+
+        print(f"{stock_code:<12} {prev_return:>13.2f}% {current_return:>13.2f}% {change_str:>14}")
+
+    print("-"*60)
+    print(f"总计: {total_count} 只股票 | 改善: {improved_count} | 下降: {declined_count} | 持平: {unchanged_count}")
+    print("="*60)
 
     if total_count == 0:
         print("\n没有可比对的股票，跳过 git tag 检查")

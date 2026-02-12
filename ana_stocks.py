@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "000002"
+STOCK_CODE = "603496"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 
