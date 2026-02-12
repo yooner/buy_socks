@@ -12,7 +12,9 @@ from ana_stocks import (
     get_weekly_data, 
     calculate_indicators,
     STOCK_CODE_EXPORT as STOCK_CODE,
-    DEFAULT_DAYS_EXPORT as DEFAULT_DAYS
+    BACKTEST_YEARS_EXPORT as BACKTEST_YEARS,
+    END_DATE_EXPORT as END_DATE,
+    get_year_range
 )
 
 
@@ -65,16 +67,18 @@ def is_new_high(df: pd.DataFrame, i: int, state: dict) -> bool:
     return close > entry_high
 
 
-def run_backtest():
-    df = get_weekly_data(STOCK_CODE)
+def run_backtest(stock_code: str = STOCK_CODE):
+    start_year, end_year = get_year_range(BACKTEST_YEARS)
+    df = get_weekly_data(stock_code, days=365 * BACKTEST_YEARS)
     df = calculate_indicators(df)
 
     if len(df) < 21:
         print(f"数据不足，需要至少21周，当前只有{len(df)}周")
-        return
+        return None, {}, {}
 
     print(f"\n{'='*100}")
-    print(f"股票代码: {STOCK_CODE}")
+    print(f"股票代码: {stock_code}")
+    print(f"回测区间: {start_year} - {end_year} ({BACKTEST_YEARS}年)")
     print(f"起始资金: {INITIAL_CAPITAL:.2f} 元")
     print(f"B1: 趋势确认 (50%)")
     print(f"B2: 首次回踩 (30%)")
@@ -86,6 +90,10 @@ def run_backtest():
     shares = 0
     state = None
     sell_state = None
+
+    yearly_summary = {}
+    last_year = None
+    prev_year_end_asset = INITIAL_CAPITAL
 
     print(f"{'周序号':<6} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'状态':<10} {'持仓':>10} {'现金':>12} {'总资产':>12} {'操作'}")
     print("-" * 100)
@@ -199,6 +207,21 @@ def run_backtest():
         if operation and '清仓' in operation:
             continue
 
+        current_year = row['date'].year if pd.notna(row['date']) else None
+        
+        if current_year is not None:
+            if last_year is None:
+                last_year = current_year
+                yearly_summary[current_year] = {'start_asset': prev_year_end_asset, 'end_asset': None}
+            
+            if current_year != last_year:
+                yearly_summary[last_year]['end_asset'] = total_asset
+                prev_year_end_asset = total_asset
+                yearly_summary[current_year] = {'start_asset': prev_year_end_asset, 'end_asset': None}
+                last_year = current_year
+            
+            yearly_summary[current_year]['end_asset'] = total_asset
+
     final_asset = cash + shares * df.iloc[-1]['close']
 
     print(f"\n{'='*100}")
@@ -206,7 +229,28 @@ def run_backtest():
     print(f"最终资产: {final_asset:.2f} 元")
     print(f"收益率: {(final_asset / INITIAL_CAPITAL - 1) * 100:.2f}%")
     print(f"{'='*100}\n")
+    
+    print(f"{'='*60}")
+    print(f"年度收益:")
+    print(f"{'='*60}")
+    sorted_years = sorted(yearly_summary.keys())
+    yearly_returns = {}
+    for year in sorted_years:
+        if 'end_asset' in yearly_summary[year]:
+            start = yearly_summary[year]['start_asset']
+            end = yearly_summary[year]['end_asset']
+            diff = end - start
+            pct = (diff / start * 100) if start > 0 else 0
+            yearly_returns[year] = pct
+            print(f"{year}年: {start:.2f} → {end:.2f} ({diff:+.2f}元, {pct:+.2f}%)")
+    print(f"{'='*60}\n")
+
+    total_return = (final_asset / INITIAL_CAPITAL - 1) * 100
+    return total_return, yearly_returns, {}
 
 
 if __name__ == "__main__":
-    run_backtest()
+    total_return, yearly_returns, extra = run_backtest()
+    print(f"\n汇总结果:")
+    print(f"总收益率: {total_return:+.2f}%")
+    print(f"年度收益率: {yearly_returns}")

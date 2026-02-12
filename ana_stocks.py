@@ -1,28 +1,54 @@
-import akshare as ak
+import tushare as ts
 import pandas as pd
 import json
 import os
+import time
+import requests
 from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "603496"
+STOCK_CODE = "000002"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 
-DEFAULT_DAYS = 365 * 10
+CACHE_DAYS = 365 * 10  # 缓存10年数据
+BACKTEST_YEARS = 2.5  # 回测默认5年（所有程序统一使用）
+
+END_DATE = pd.to_datetime("20260211")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
+
+TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
+if TS_TOKEN:
+    ts.set_token(TS_TOKEN)
+    pro = ts.pro_api()
+else:
+    pro = None
 
 
-def get_date_range(days: int = DEFAULT_DAYS) -> Tuple[datetime, datetime]:
-    end_date = datetime.now()
+def get_date_range(days: int) -> Tuple[datetime, datetime]:
+    if END_DATE is None:
+        end_date = datetime.now()
+    else:
+        end_date = pd.to_datetime(END_DATE)
     start_date = end_date - timedelta(days=days)
     return start_date, end_date
 
-def get_cache_path(stock_code: str) -> str:
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    return os.path.join(CACHE_DIR, f"{stock_code}.json")
 
-def get_cached_data(stock_code: str) -> Optional[Dict]:
-    cache_path = get_cache_path(stock_code)
+def get_year_range(years: int) -> Tuple[int, int]:
+    if END_DATE is None:
+        end_year = datetime.now().year
+    else:
+        end_year = pd.to_datetime(END_DATE).year
+    start_year = end_year - years + 1
+    return start_year, end_year
+
+def get_daily_cache_path(stock_code: str) -> str:
+    return os.path.join(CACHE_DIR, f"{stock_code}_daily.json")
+
+def get_daily_data_from_cache(stock_code: str) -> Optional[pd.DataFrame]:
+    cache_path = get_daily_cache_path(stock_code)
     if not os.path.exists(cache_path):
         return None
     
@@ -34,70 +60,186 @@ def get_cached_data(stock_code: str) -> Optional[Dict]:
         if (datetime.now() - cache_time).days >= CACHE_EXPIRY_DAYS:
             return None
         
-        return cache_data
+        return pd.DataFrame(cache_data['daily_data'])
     except:
         return None
 
-def save_to_cache(stock_code: str, data: Dict) -> None:
-    cache_path = get_cache_path(stock_code)
-    data['cache_time'] = datetime.now().isoformat()
-    with open(cache_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def get_stock_weekly_data(stock_code: str = STOCK_CODE, 
-                          start_date: str = None, 
-                          end_date: str = None,
-                          days: int = DEFAULT_DAYS,
-                          use_cache: bool = True) -> pd.DataFrame:
-    if start_date is None or end_date is None:
-        start, end = get_date_range(days)
-        if start_date is None:
-            start_date = start.strftime("%Y%m%d")
-        if end_date is None:
-            end_date = end.strftime("%Y%m%d")
-    if use_cache:
-        cached = get_cached_data(stock_code)
-        if cached and 'weekly_data' in cached:
-            print(f"从缓存读取股票 {stock_code} 数据")
-            weekly_df = pd.DataFrame(cached['weekly_data'])
-            return weekly_df
-
-    print(f"从 akshare 获取股票 {stock_code} 数据...")
-    daily_data = ak.stock_zh_a_hist(symbol=stock_code, period="daily", 
-                                   start_date=start_date, end_date=end_date, adjust="qfq")
+def save_daily_to_cache(stock_code: str, daily_data: pd.DataFrame) -> None:
+    cache_path = get_daily_cache_path(stock_code)
     
-    daily_data['date'] = pd.to_datetime(daily_data['日期'])
-    daily_data['week'] = daily_data['date'].dt.isocalendar().week
-    daily_data['year'] = daily_data['date'].dt.year
+    daily_data_copy = daily_data.copy()
+    
+    if 'date' in daily_data_copy.columns:
+        daily_data_copy['date'] = daily_data_copy['date'].dt.strftime('%Y-%m-%d')
+    
+    cache_data = {
+        'cache_time': datetime.now().isoformat(),
+        'daily_data': daily_data_copy.to_dict(orient='records')
+    }
+    with open(cache_path, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+def aggregate_weekly(daily_data: pd.DataFrame) -> pd.DataFrame:
+    if '日期' in daily_data.columns:
+        date_col = '日期'
+        open_col = '开盘'
+        close_col = '收盘'
+        high_col = '最高'
+        low_col = '最低'
+        vol_col = '成交量'
+    elif 'date' in daily_data.columns:
+        date_col = 'date'
+        open_col = '开盘'
+        close_col = '收盘'
+        high_col = '最高'
+        low_col = '最低'
+        vol_col = '成交量'
+    else:
+        date_col = 'trade_date'
+        open_col = 'open'
+        close_col = 'close'
+        high_col = 'high'
+        low_col = 'low'
+        vol_col = 'vol'
     
     weekly_data = daily_data.groupby(['year', 'week']).agg({
-        '日期': 'last',
-        '开盘': 'first',
-        '收盘': 'last',
-        '最高': 'max',
-        '最低': 'min',
-        '成交量': 'sum'
+        date_col: 'last',
+        open_col: 'first',
+        close_col: 'last',
+        high_col: 'max',
+        low_col: 'min',
+        vol_col: 'sum'
     }).reset_index()
     
-    weekly_data = weekly_data.sort_values('日期').reset_index(drop=True)
+    weekly_data = weekly_data.sort_values(date_col).reset_index(drop=True)
     weekly_data.rename(columns={
-        '日期': 'date',
-        '开盘': 'open',
-        '收盘': 'close',
-        '最高': 'high',
-        '最低': 'low',
-        '成交量': 'volume'
+        date_col: 'date',
+        open_col: 'open',
+        close_col: 'close',
+        high_col: 'high',
+        low_col: 'low',
+        vol_col: 'volume'
     }, inplace=True)
-    
-    if use_cache:
-        cache_data = {'weekly_data': weekly_data.to_dict(orient='records')}
-        save_to_cache(stock_code, cache_data)
     
     return weekly_data
 
+def ensure_daily_cache(stock_code: str = STOCK_CODE, max_retries: int = 5, retry_delay: int = 3) -> pd.DataFrame:
+    cached = get_daily_data_from_cache(stock_code)
+    if cached is not None:
+        print(f"缓存已有 {stock_code} 日线数据")
+        return cached
+    
+    print(f"从 tushare 获取 {stock_code} 日线数据...")
+    if END_DATE is None:
+        end = datetime.now()
+    else:
+        end = pd.to_datetime(END_DATE)
+    start = end - timedelta(days=CACHE_DAYS)
+    start_date = start.strftime("%Y%m%d")
+    end_date = end.strftime("%Y%m%d")
+    
+    session = requests.Session()
+    retries = Retry(total=max_retries, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 429])
+    session.mount('http://', HTTPAdapter(max_retries=retries))
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"尝试第 {attempt}/{max_retries} 次请求...")
+            
+            ts_code = f"{stock_code}.SH" if stock_code.startswith("6") else f"{stock_code}.SZ"
+            
+            if pro is None:
+                daily_data = ts.pro_api().daily(
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+            else:
+                daily_data = pro.daily(
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+            break
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"连接失败: {e}")
+            if attempt < max_retries:
+                wait_time = retry_delay * attempt
+                print(f"等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
+            else:
+                print("重试次数耗尽，抛出异常")
+                raise e
+    
+    daily_data['date'] = pd.to_datetime(daily_data['trade_date'])
+    
+    if 'open' in daily_data.columns:
+        daily_data.rename(columns={
+            'open': '开盘',
+            'close': '收盘',
+            'high': '最高',
+            'low': '最低',
+            'vol': '成交量'
+        }, inplace=True)
+    
+    daily_data['week'] = daily_data['date'].dt.isocalendar().week
+    daily_data['year'] = daily_data['date'].dt.year
+    
+    save_daily_to_cache(stock_code, daily_data)
+    
+    return daily_data
 
-def get_weekly_data(stock_code: str = STOCK_CODE) -> pd.DataFrame:
-    return get_stock_weekly_data(stock_code)
+
+def get_weekly_data(
+    stock_code: str = STOCK_CODE,
+    start_date: str = None,
+    end_date: str = None,
+    days: int = BACKTEST_YEARS * 365
+) -> pd.DataFrame:
+    """从缓存获取日线，聚合为周线，按日期范围筛选返回"""
+    daily_data = ensure_daily_cache(stock_code)
+    weekly_data = aggregate_weekly(daily_data)
+    
+    if start_date is None or end_date is None:
+        start, end = get_date_range(days)
+        if start_date is None:
+            start_date = start
+        if end_date is None:
+            end_date = end
+    
+    weekly_data = weekly_data.copy()
+    weekly_data['date'] = pd.to_datetime(weekly_data['date'], errors='coerce')
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date)
+    
+    mask = (weekly_data['date'] >= start_ts) & (weekly_data['date'] <= end_ts)
+    filtered = weekly_data[mask]
+    
+    return filtered.reset_index(drop=True)
+
+
+def get_daily_data(
+    stock_code: str = STOCK_CODE,
+    start_date: str = None,
+    end_date: str = None,
+    days: int = BACKTEST_YEARS * 365
+) -> pd.DataFrame:
+    """从缓存获取日线数据"""
+    daily_data = ensure_daily_cache(stock_code)
+    
+    if start_date is None or end_date is None:
+        start, end = get_date_range(days)
+        if start_date is None:
+            start_date = start
+        if end_date is None:
+            end_date = end
+    else:
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+    
+    filtered = daily_data[(daily_data['date'] >= start_date) & (daily_data['date'] <= end_date)]
+    return filtered.reset_index(drop=True)
 
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -106,8 +248,13 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 STOCK_CODE_EXPORT = STOCK_CODE
-DEFAULT_DAYS_EXPORT = DEFAULT_DAYS
-get_date_range = get_date_range
+BACKTEST_YEARS_EXPORT = BACKTEST_YEARS
+END_DATE_EXPORT = END_DATE
+ensure_daily_cache = ensure_daily_cache
+aggregate_weekly = aggregate_weekly
+get_year_range = get_year_range
+get_weekly_data = get_weekly_data
+get_daily_data = get_daily_data
 
 def calculate_weekly_avg(weekly_data: pd.DataFrame, start_week: int = 1, end_week: int = 20) -> Dict[str, float]:
     selected_weeks = weekly_data[(weekly_data['周序号'] >= start_week) & (weekly_data['周序号'] <= end_week)]
@@ -150,7 +297,8 @@ def main():
     stock_code = STOCK_CODE
     
     print(f"正在获取股票 {stock_code} 的历史数据...")
-    weekly_data = get_stock_weekly_data(stock_code)
+    daily_data = ensure_daily_cache(stock_code)
+    weekly_data = aggregate_weekly(daily_data)
     
     print(f"数据处理完成，共 {len(weekly_data)} 周数据\n")
     
