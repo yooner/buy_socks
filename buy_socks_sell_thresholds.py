@@ -18,9 +18,6 @@ buy_ratios = [0.10, 0.15, 0.20, 0.25, 0.30]
 sell_thresholds = [0.08, 0.12, 0.18]
 sell_ratios = [0.30, 0.30, 0.40]
 
-HIGH_DURATION_WEEKS = 8
-DRAWBACK_THRESHOLD = 0.08
-
 
 def calculate_ma20(prices: List[float]) -> float:
     if len(prices) < 20:
@@ -56,21 +53,13 @@ def run_backtest(stock_code: str = STOCK_CODE):
     print(f"买入比例: {buy_ratios}")
     print(f"卖出档位: {sell_thresholds}")
     print(f"卖出比例: {sell_ratios}")
-    print(f"峰值持续周数: {HIGH_DURATION_WEEKS}")
-    print(f"回撤阈值: {DRAWBACK_THRESHOLD*100:.0f}%")
     print(f"{'='*80}\n")
 
-    print(f"{'周序号':<6} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'最高价':>10} {'回撤':>8} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'操作':<12}")
-    print("-" * 100)
+    print(f"{'周序号':<6} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'操作':<20}")
+    print("-" * 85)
 
     weekly_data = calculate_indicators(weekly_data)
     price_history = []
-
-    current_high = 0
-    current_high_time = 0
-    weeks_since_high = 0
-    peak_passed = False
-    peak_reset_logged = False
 
     for week_idx in range(len(weekly_data)):
         current_week = week_idx + 1
@@ -82,33 +71,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
         price_history.append(current_price)
         ma20 = row['ma20'] if pd.notna(row['ma20']) else calculate_ma20(price_history)
 
-        if current_price > current_high:
-            current_high = current_price
-            current_high_time = current_week
-            weeks_since_high = 0
-        else:
-            weeks_since_high = current_week - current_high_time
-
-        peak_expired = weeks_since_high >= HIGH_DURATION_WEEKS and current_week > HIGH_DURATION_WEEKS
-
-        if peak_expired and not peak_reset_logged:
-            peak_passed = False
-            peak_reset_logged = True
-
-        drawback_ratio = 0
-        peak_blocked = False
-
-        if current_high > 0 and not peak_passed:
-            drawback_ratio = (current_high - current_price) / current_high
-            if drawback_ratio >= DRAWBACK_THRESHOLD:
-                peak_passed = True
-                peak_blocked = True
-
         operation = ""
 
         if current_week >= 21:
             if shares == 0:
-                if buy_count < len(buy_levels) and not peak_blocked:
+                if buy_count < len(buy_levels):
                     level = buy_levels[buy_count]
                     expected_price = ma20 * (1 + level)
                     if current_price <= expected_price:
@@ -132,8 +99,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 'type': 'BUY',
                                 'buy_count': buy_count
                             })
-                elif peak_blocked:
-                    operation = f"峰值回撤阻止"
             else:
                 sold_all = False
 
@@ -160,9 +125,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 if sold_all:
                     buy_count = 0
                     sell_count = 0
-                    peak_passed = False
-                    peak_reset_logged = False
-                elif shares > 0 and buy_count < len(buy_levels) and not peak_blocked:
+                elif shares > 0 and buy_count < len(buy_levels):
                     level = buy_levels[buy_count]
                     expected_price = ma20 * (1 + level)
                     if current_price <= expected_price:
@@ -189,10 +152,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
         total_asset = left_cash + shares * current_price
 
-        drawback_str = f"{drawback_ratio*100:.1f}%" if current_high > 0 else "-"
-        high_str = f"{current_high:.2f}" if current_high > 0 else "-"
-
-        print(f"{current_week:<6} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {high_str:>10} {drawback_str:>8} {shares:>10} {left_cash:>12.2f} {total_asset:>12.2f} {operation:<12}")
+        print(f"{current_week:<6} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {shares:>10} {left_cash:>12.2f} {total_asset:>12.2f} {operation:<20}")
 
         if last_year is None:
             last_year = current_year
