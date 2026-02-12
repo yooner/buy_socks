@@ -14,7 +14,7 @@ CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 
 CACHE_DAYS = 365 * 10  # 缓存10年数据
-BACKTEST_YEARS = 2.5  # 回测默认5年（所有程序统一使用）
+BACKTEST_YEARS = 2  # 回测默认5年（所有程序统一使用）
 
 END_DATE = pd.to_datetime("20260211")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）

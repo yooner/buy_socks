@@ -112,13 +112,19 @@ def run_backtest_for_stock(strategy_key: str, stock_code: str) -> Tuple[Optional
         sys.stdout = old_stdout
 
 
-def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: str):
-    """保存结果到 Excel"""
-    if os.path.exists(excel_file):
-        try:
-            os.remove(excel_file)
-        except Exception as e:
-            print(f"删除旧文件失败: {e}")
+def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: str, previous_df: pd.DataFrame = None, enable_update: bool = True):
+    """保存结果到 Excel
+    enable_update: 是否允许更新Excel（仅当60%以上股票收益率改善时才更新）
+    """
+    if not enable_update:
+        if previous_df is not None and not previous_df.empty:
+            print("\n收益率改善不足60%，不更新Excel，保留历史最优数据")
+        else:
+            print(f"\n首次运行，保存新数据到 {excel_file}")
+
+        if os.path.exists(excel_file):
+            print(f"   现有文件: {excel_file}")
+        return previous_df if previous_df is not None else pd.DataFrame()
 
     columns = ['编号', '总收益率']
 
@@ -147,6 +153,12 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
         row['gittag'] = r.get('gittag', '')
 
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+    if os.path.exists(excel_file):
+        try:
+            os.remove(excel_file)
+        except Exception as e:
+            print(f"删除旧文件失败: {e}")
 
     wb = Workbook()
     ws = wb.active
@@ -194,10 +206,12 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
 
 
 def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, strategy_key: str):
-    """检查是否需要创建 git tag，并显示详细的收益率对比"""
+    """检查是否需要创建 git tag，并显示详细的收益率对比
+    返回: (improvement_rate, enable_update) - 改善比例和是否允许更新Excel
+    """
     if previous_df is None or previous_df.empty:
-        print("\n没有历史数据，跳过 git tag 检查")
-        return
+        print("\n没有历史数据，首次运行")
+        return 100.0, True
 
     print("\n" + "="*60)
     print("收益率对比详情")
@@ -247,8 +261,8 @@ def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, str
     print("="*60)
 
     if total_count == 0:
-        print("\n没有可比对的股票，跳过 git tag 检查")
-        return
+        print("\n没有可比对的股票，首次运行")
+        return 100.0, True
 
     improvement_rate = improved_count / total_count * 100
     print(f"\n收益率改善股票数: {improved_count}/{total_count} ({improvement_rate:.1f}%)")
@@ -266,8 +280,11 @@ def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, str
             print(f"   Commit message: {commit_msg}")
         except subprocess.CalledProcessError as e:
             print(f"\n❌ Git 操作失败: {e}")
+
+        return improvement_rate, True
     else:
         print(f"\n收益率改善比例 ({improvement_rate:.1f}%) 未达到 60%，不创建 git tag")
+        return improvement_rate, False
 
 
 def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = True):
@@ -291,7 +308,7 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
     print(f"{'='*60}")
 
     previous_df = load_existing_results(excel_file)
-    if not previous_df.empty and enable_git_tag:
+    if not previous_df.empty:
         print(f"\n已加载历史数据，共 {len(previous_df)} 条记录")
 
     results = []
@@ -313,10 +330,12 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
         print(f"\n没有有效的回测结果")
         return
 
-    df = save_results_to_excel(results, excel_file, strategy_key)
-
     if enable_git_tag:
-        check_and_create_git_tag(results, previous_df, strategy_key)
+        _, enable_update = check_and_create_git_tag(results, previous_df, strategy_key)
+    else:
+        enable_update = True
+
+    save_results_to_excel(results, excel_file, strategy_key, previous_df, enable_update)
 
     return results
 
