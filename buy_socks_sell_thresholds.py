@@ -15,7 +15,7 @@ INITIAL_CAPITAL = 100000
 buy_levels = [-0.04, -0.08, -0.13, -0.19, -0.26]
 buy_ratios = [0.10, 0.15, 0.20, 0.25, 0.30]
 
-sell_thresholds = [0.08, 0.12, 0.18]
+sell_atr_multipliers = [1.0, 1.5, 2.0]
 sell_ratios = [0.30, 0.30, 0.40]
 
 
@@ -32,6 +32,15 @@ def run_backtest(stock_code: str = STOCK_CODE):
     if len(weekly_data) < 21:
         print(f"数据不足，需要至少21周数据，当前只有{len(weekly_data)}周")
         return None, {}
+
+    weekly_data = calculate_indicators(weekly_data)
+    
+    prev_close = weekly_data['close'].shift(1)
+    tr1 = weekly_data['high'] - weekly_data['low']
+    tr2 = (weekly_data['high'] - prev_close).abs()
+    tr3 = (weekly_data['low'] - prev_close).abs()
+    weekly_data['TR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    weekly_data['ATR_14'] = weekly_data['TR'].rolling(14).mean()
 
     left_cash = INITIAL_CAPITAL
     shares = 0
@@ -51,15 +60,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
     print(f"起始资金: {INITIAL_CAPITAL:.2f} 元")
     print(f"买入档位: {buy_levels}")
     print(f"买入比例: {buy_ratios}")
-    print(f"卖出档位: {sell_thresholds}")
+    print(f"卖出ATR倍数: {sell_atr_multipliers}")
     print(f"卖出比例: {sell_ratios}")
     print(f"{'='*80}\n")
 
-    print(f"{'周序号':<6} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'操作':<20}")
-    print("-" * 85)
-
-    weekly_data = calculate_indicators(weekly_data)
-    price_history = []
+    print(f"{'周序号':<6} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'ATR14':>8} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'操作':<30}")
+    print("-" * 110)
 
     for week_idx in range(len(weekly_data)):
         current_week = week_idx + 1
@@ -70,6 +76,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
         price_history.append(current_price)
         ma20 = row['ma20'] if pd.notna(row['ma20']) else calculate_ma20(price_history)
+        
+        current_atr = row['ATR_14'] if pd.notna(row.get('ATR_14', None)) else None
 
         operation = ""
 
@@ -102,9 +110,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
             else:
                 sold_all = False
 
-                if sell_count < len(sell_thresholds):
-                    threshold = sell_thresholds[sell_count]
-                    if current_price >= ma20 * (1 + threshold):
+                if sell_count < len(sell_atr_multipliers) and current_atr is not None and not pd.isna(current_atr):
+                    atr_multiplier = sell_atr_multipliers[sell_count]
+                    sell_threshold = ma20 + atr_multiplier * current_atr
+                    if current_price >= sell_threshold:
                         sell_ratio = sell_ratios[sell_count]
                         if sell_count == len(sell_ratios) - 1:
                             sell_shares = shares
@@ -117,10 +126,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             sell_count += 1
                             total_asset = left_cash + shares * current_price
                             if shares == 0:
-                                operation = f"清仓 总资产{total_asset:.0f}"
+                                operation = f"清仓(MA20+{atr_multiplier}*ATR={sell_threshold:.2f}) 总资产{total_asset:.0f}"
                                 sold_all = True
                             else:
-                                operation = f"减仓{sell_ratio*100:.0f}% 总资产{total_asset:.0f}"
+                                operation = f"减仓{sell_ratio*100:.0f}%(MA20+{atr_multiplier}*ATR={sell_threshold:.2f})"
 
                 if sold_all:
                     buy_count = 0
@@ -152,7 +161,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
         total_asset = left_cash + shares * current_price
 
-        print(f"{current_week:<6} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {shares:>10} {left_cash:>12.2f} {total_asset:>12.2f} {operation:<20}")
+        atr_str = f"{current_atr:>8.2f}" if current_atr is not None and not pd.isna(current_atr) else " " * 8
+        print(f"{current_week:<6} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {atr_str} {shares:>10} {left_cash:>12.2f} {total_asset:>12.2f} {operation:<30}")
 
         if last_year is None:
             last_year = current_year

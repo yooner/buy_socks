@@ -20,7 +20,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 STRATEGIES = {
     'thresholds': {
         'module': 'buy_socks_sell_thresholds',
-        'params': ['INITIAL_CAPITAL', 'buy_levels', 'buy_ratios', 'sell_thresholds', 'sell_ratios'],
+        'params': ['INITIAL_CAPITAL', 'buy_levels', 'buy_ratios', 'sell_atr_multipliers', 'sell_ratios'],
         'run_backtest': 'run_backtest',
         'name': '阈值策略',
         'excel_suffix': 'thresholds'

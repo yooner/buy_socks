@@ -19,6 +19,7 @@ from ana_stocks import (
     get_year_range
 )
 
+ATR_MULTIPLIER = 4
 
 def detect_trend(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -47,6 +48,13 @@ def run_backtest(stock_code: str = STOCK_CODE):
         daily_data = pd.DataFrame()
     else:
         daily_data['date'] = pd.to_datetime(daily_data['date'])
+        daily_data = daily_data.sort_values('date').reset_index(drop=True)
+        prev_close = daily_data['收盘'].shift(1)
+        tr1 = daily_data['最高'] - daily_data['最低']
+        tr2 = (daily_data['最高'] - prev_close).abs()
+        tr3 = (daily_data['最低'] - prev_close).abs()
+        daily_data['TR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        daily_data['ATR_14'] = daily_data['TR'].rolling(14).mean()
 
     cash = INITIAL_CAPITAL
     shares = 0
@@ -55,10 +63,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     trade_history = []
     completed_trades = []
 
-    structural_low = None
-    in_daily_high_broken = False
-    last_daily_high = None
-    last_daily_close = None
+    high_10d = None
+    lock = False
+    prev_trend_up = None
 
     yearly_summary = {}
     last_year = None
@@ -70,12 +77,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
     print(f"起始资金: {INITIAL_CAPITAL:.2f} 元")
     print(f"{'='*80}\n")
 
-    header = f"{'周序号':<5} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'日线最高':>10} {'趋势':>6} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'状态':<20} {'操作':<20}"
+    header = f"{'周序号':<5} {'日期':<12} {'收盘价':>10} {'MA20':>10} {'ATR14':>8} {'10日高点':>10} {'趋势':>6} {'持有股数':>10} {'剩余资金':>12} {'总资产':>12} {'状态':<55} {'操作':<20}"
     print(header)
-    print("-" * 150)
+    print("-" * 195)
 
     for week_idx in range(len(weekly_data)):
-        current_week = week_idx + 1
+        current_week_idx = week_idx + 1
         row = weekly_data.iloc[week_idx]
         current_price = row['close']
         current_date = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10]
@@ -97,61 +104,59 @@ def run_backtest(stock_code: str = STOCK_CODE):
         operation = ""
         recent_daily_close = current_price
         recent_daily_high = None
+        current_atr = None
+        atr_value = None
 
         if daily_data is not None and len(daily_data) > 0:
-            week_end = row['date'] + pd.Timedelta(days=7)
-
-            if week_idx == 0:
-                week_daily_data = daily_data[daily_data['date'] <= week_end]
-            else:
-                prev_week_end = weekly_data.iloc[week_idx - 1]['date']
-                week_daily_data = daily_data[
-                    (daily_data['date'] > prev_week_end) &
-                    (daily_data['date'] <= week_end)
-                ]
+            current_year = row['year']
+            current_week = row['week']
+            
+            week_daily_data = daily_data[
+                (daily_data['year'] == current_year) &
+                (daily_data['week'] == current_week)
+            ]
 
             if len(week_daily_data) > 0:
                 recent_daily_high = week_daily_data['最高'].max()
                 recent_daily_low = week_daily_data['最低'].min()
                 recent_daily_close = week_daily_data['收盘'].iloc[-1]
+                current_atr = week_daily_data['ATR_14'].iloc[-1]
+                
+                if shares > 0:
+                    current_date_ts = row['date']
+                    lookback_start = current_date_ts - pd.Timedelta(days=14)
+                    daily_10d = daily_data[
+                        (daily_data['date'] >= lookback_start) &
+                        (daily_data['date'] <= current_date_ts)
+                    ].tail(10)
+                    
+                    if len(daily_10d) > 0:
+                        high_10d = daily_10d['最高'].max()
+                        atr_value = daily_10d['ATR_14'].iloc[-1]
+                    else:
+                        high_10d = recent_daily_high
+                        atr_value = current_atr
+                    
+                    if high_10d is not None and atr_value is not None and not pd.isna(atr_value):
+                        sell_price = high_10d - ATR_MULTIPLIER * atr_value
+                    else:
+                        sell_price = None
+                    
+                    if high_10d is not None:
+                        daily_below_sell = week_daily_data[week_daily_data['收盘'] < sell_price]
+                        if len(daily_below_sell) > 0:
+                            actual_sell_price = daily_below_sell['收盘'].iloc[0]
+                            actual_sell_date = daily_below_sell['date'].iloc[0]
+                            state_info = f"[{actual_sell_date.strftime('%m-%d')} 跌破止损{sell_price:.2f}(高点{high_10d:.2f}-{ATR_MULTIPLIER}*ATR{atr_value:.2f}) 实际{actual_sell_price:.2f}]"
 
-                # 2. 持仓期间始终监控日线高点失效（无论趋势方向）
-                # 注意：先用当前周与上一周的last_daily_high比较，判断当前周是否失效
-                # 条件：本周日线最高 < 上周日线最高 AND 本周周线收盘 < 上周周线收盘
-                if shares > 0 and not in_daily_high_broken:
-                    if (
-                        last_daily_high is not None
-                        and recent_daily_high < last_daily_high
-                        and current_price < last_weekly_close
-                    ):
-                        in_daily_high_broken = True
-                        structural_low = recent_daily_low
-                        state_info = f"[日线高点失效@{recent_daily_high:.2f}]"
-
-                # 1. 最后更新上一周的高点和收盘（无论是否持仓）
-                last_daily_high = recent_daily_high
-                last_daily_close = recent_daily_close
-
-                # 3. 趋势向下或价格偏离MA20超过8%时，开启结构有效性判断
-                if shares > 0 and (not trend_up or recent_daily_close < row['ma20'] * 0.92):
-                    close_above_ma20 = recent_daily_close > row['ma20']
-                    ma20_slope_positive = row['slope'] > 0
-                    structure_is_valid = close_above_ma20 and ma20_slope_positive
-
-                    if in_daily_high_broken:
-                        if structure_is_valid:
-                            if structural_low is None:
-                                structural_low = recent_daily_low
-                            else:
-                                structural_low = max(structural_low, recent_daily_low)
-                            in_daily_high_broken = False
-                            state_info = f"[日线回调结束@{structural_low:.2f}]"
-                        else:
-                            state_info = f"[日线冻结{structural_low:.2f}]"
-
-        if current_week >= 25:
+        if current_week_idx >= 25:
             if shares == 0:
-                if trend_up and ma20 * 1.05 >= current_price >= ma20:
+                if lock:
+                    if prev_trend_up == False and trend_up:
+                        lock = False
+                        state_info = "[解锁]"
+                
+                if trend_up and not lock:
                     new_shares = int(cash / current_price)
                     if new_shares > 0:
                         cost = new_shares * current_price
@@ -159,10 +164,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         shares = new_shares
                         buy_count += 1
                         operation = f"买入"
-                        structural_low = None
-                        in_daily_high_broken = False
-                        last_daily_high = None
-                        last_daily_close = None
+                        high_10d = None
                         trade_history.append({
                             'week': current_week,
                             'date': current_date,
@@ -172,37 +174,45 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             'type': 'BUY'
                         })
             else:
-                if in_daily_high_broken and structural_low is not None and recent_daily_close < structural_low:
-                    revenue = shares * recent_daily_close
-                    cash = revenue
-                    profit = revenue - sum(t['cost'] for t in trade_history if t['type'] == 'BUY')
-                    sell_count += 1
-                    for t in trade_history:
-                        if t['type'] == 'BUY':
-                            t['sold'] = True
-                    operation = f"跌破日线结构低点清仓 盈利{profit:.0f}"
-                    sell_trade = {
-                        'week': current_week,
-                        'date': current_date,
-                        'price': recent_daily_close,
-                        'shares': shares,
-                        'revenue': revenue,
-                        'profit': profit,
-                        'type': 'SELL'
-                    }
-                    completed_trades.extend(trade_history)
-                    completed_trades.append(sell_trade)
-                    trade_history = []
-                    shares = 0
-                    in_daily_high_broken = False
-                    structural_low = None
-                    last_daily_high = None
-                    last_daily_close = None
+                if high_10d is not None and atr_value is not None and not pd.isna(atr_value):
+                    sell_price = high_10d - ATR_MULTIPLIER * atr_value
+                    daily_below_sell = week_daily_data[week_daily_data['收盘'] < sell_price]
+                    if len(daily_below_sell) > 0:
+                        actual_sell_price = daily_below_sell['收盘'].iloc[0]
+                        actual_sell_date = daily_below_sell['date'].iloc[0]
+                        revenue = shares * actual_sell_price
+                        cash = revenue
+                        profit = revenue - sum(t['cost'] for t in trade_history if t['type'] == 'BUY')
+                        sell_count += 1
+                        for t in trade_history:
+                            if t['type'] == 'BUY':
+                                t['sold'] = True
+                        operation = f"{actual_sell_date.strftime('%m-%d')}跌破止损{sell_price:.2f}(高点{high_10d:.2f}-{ATR_MULTIPLIER}*ATR{atr_value:.2f})@{actual_sell_price:.2f} 盈利{profit:.0f}"
+                        sell_trade = {
+                            'week': current_week,
+                            'date': actual_sell_date.strftime('%Y-%m-%d'),
+                            'price': actual_sell_price,
+                            'shares': shares,
+                            'revenue': revenue,
+                            'profit': profit,
+                            'type': 'SELL'
+                        }
+                        completed_trades.extend(trade_history)
+                        completed_trades.append(sell_trade)
+                        trade_history = []
+                        shares = 0
+                        high_10d = None
+                        if trend_up:
+                            lock = True
+                            state_info = "[锁定]"
+
+        prev_trend_up = trend_up
 
         total_asset = cash + shares * recent_daily_close
 
-        daily_high_str = f"{recent_daily_high:>10.2f}" if recent_daily_high is not None else " " * 10
-        print(f"{current_week:<5} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {daily_high_str} {trend_str:>6} {shares:>10} {cash:>12.2f} {total_asset:>12.2f} {state_info:<20} {operation:<20}")
+        atr_str = f"{current_atr:>8.2f}" if current_atr is not None and not pd.isna(current_atr) else " " * 8
+        high_10d_str = f"{high_10d:>10.2f}" if high_10d is not None else " " * 10
+        print(f"{current_week:<5} {current_date:<12} {current_price:>10.2f} {ma20:>10.2f} {atr_str} {high_10d_str} {trend_str:>6} {shares:>10} {cash:>12.2f} {total_asset:>12.2f} {state_info:<20} {operation:<20}")
 
         if last_year is None:
             last_year = current_year

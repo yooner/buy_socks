@@ -9,9 +9,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "002594"
+STOCK_CODE = "603496"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
+INITIAL_CAPITAL_EXPORT = 100000
 
 CACHE_DAYS = 365 * 10  # 缓存10年数据
 BACKTEST_YEARS = 5  # 回测默认5年（所有程序统一使用）
@@ -234,9 +235,12 @@ def get_daily_data(
             start_date = start
         if end_date is None:
             end_date = end
-    else:
-        start_date = pd.to_datetime(start_date)
-        end_date = pd.to_datetime(end_date)
+    
+    start_date = pd.to_datetime(start_date)
+    end_date = pd.to_datetime(end_date)
+    
+    daily_data = daily_data.copy()
+    daily_data['date'] = pd.to_datetime(daily_data['date'], errors='coerce')
     
     filtered = daily_data[(daily_data['date'] >= start_date) & (daily_data['date'] <= end_date)]
     return filtered.reset_index(drop=True)
