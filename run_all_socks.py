@@ -31,6 +31,13 @@ STRATEGIES = {
         'run_backtest': 'run_backtest',
         'name': '趋势爆发策略',
         'excel_suffix': 'outbreak'
+    },
+    'trend': {
+        'module': 'buy_socks_sell_trend',
+        'params': ['INITIAL_CAPITAL'],
+        'run_backtest': 'run_backtest',
+        'name': '趋势结构策略',
+        'excel_suffix': 'trend'
     }
 }
 
