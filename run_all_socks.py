@@ -38,6 +38,13 @@ STRATEGIES = {
         'run_backtest': 'run_backtest',
         'name': '趋势结构策略',
         'excel_suffix': 'trend'
+    },
+    'bodong': {
+        'module': 'buy_socks_sell_bodong',
+        'params': ['INITIAL_CAPITAL'],
+        'run_backtest': 'run_backtest',
+        'name': '波动率策略',
+        'excel_suffix': 'bodong'
     }
 }
 

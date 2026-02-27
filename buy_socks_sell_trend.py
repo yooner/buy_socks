@@ -94,17 +94,19 @@ def run_backtest(stock_code: str = STOCK_CODE):
     total_profit = 0          # 总盈利
     
     # 用于动态计算满足买入条件的持续天数
-    # 条件：MA20 > MA60 且 收盘价 > MA20 且 ATR连续增长
+    # 条件：MA20 > MA60 且 收盘价 > MA20 且 ATR连续增长 且 波动率连续增长
     consecutive_valid_days = 0  # 持续满足条件的天数计数器
     atr_growing_days = 0        # ATR连续增长天数计数器
+    volatility_growing_days = 0 # 波动率连续增长天数计数器
     prev_atr = None             # 前一天的ATR值
+    prev_volatility = None      # 前一天的波动率值
     
     # 打印表头
     print(f"\n{'='*140}")
     print(f"股票代码: {stock_code}")
     print(f"回测区间: {start_year} - {end_year} ({BACKTEST_YEARS}年)")
     print(f"起始资金: {initial_capital:,.2f}")
-    print(f"买入条件: 连续3天满足(MA20>MA60且收盘价>MA20且ATR递增且波动率>0.5)，第3天收盘价买入")
+    print(f"买入条件: 连续3天满足(MA20>MA60且收盘价>MA20且ATR递增且波动率>0.5且波动率递增)，第3天收盘价买入")
     print(f"卖出条件: 收盘价跌破MA20")
     print(f"{'='*140}\n")
     
@@ -125,7 +127,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
         
         # 确保MA20和MA60有效
         atr14 = row['atr14']
-        if pd.notna(ma20) and pd.notna(ma60) and pd.notna(atr14):
+        volatility = row['波动率']
+        if pd.notna(ma20) and pd.notna(ma60) and pd.notna(atr14) and pd.notna(volatility):
             # 判断当天是否满足买入条件：MA20 > MA60 且 收盘价 > MA20
             is_valid = (ma20 > ma60) and (close_price > ma20)
             
@@ -133,6 +136,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
             is_atr_growing = False
             if prev_atr is not None and atr14 > prev_atr:
                 is_atr_growing = True
+            
+            # 判断波动率是否增长
+            is_volatility_growing = False
+            if prev_volatility is not None and volatility > prev_volatility:
+                is_volatility_growing = True
             
             # 更新持续天数（只有在没有持仓时才计数）
             if position == 0:
@@ -146,14 +154,20 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     atr_growing_days += 1
                 else:
                     atr_growing_days = 0
+                
+                # 更新波动率连续增长天数
+                if is_volatility_growing:
+                    volatility_growing_days += 1
+                else:
+                    volatility_growing_days = 0
             
-            # 更新前一天的ATR值
+            # 更新前一天的ATR值和波动率值
             prev_atr = atr14
+            prev_volatility = volatility
             
-            # 买入条件：连续3天满足条件(MA20>MA60且收盘价>MA20且ATR递增且波动率>0.5)，且当前没有持仓
-            volatility = row['波动率']
-            is_volatility_ok = pd.notna(volatility) and volatility > 0.5
-            if position == 0 and consecutive_valid_days >= 3 and atr_growing_days >= 2 and is_volatility_ok:
+            # 买入条件：连续3天满足条件(MA20>MA60且收盘价>MA20且ATR递增且波动率>0.5且波动率递增)，且当前没有持仓
+            is_volatility_ok = True
+            if position == 0 and consecutive_valid_days >= 3 and atr_growing_days >= 2 and volatility_growing_days >= 2 and is_volatility_ok:
                 # 使用当天收盘价买入
                 buy_price = close_price
                 position = int(cash / buy_price)  # 买入股数（整数）
@@ -172,6 +186,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     # 买入后重置持续天数
                     consecutive_valid_days = 0
                     atr_growing_days = 0
+                    volatility_growing_days = 0
             
             # 卖出条件：收盘价跌破MA20，且当前有持仓
             elif close_price < ma20 and position > 0:
@@ -194,6 +209,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 # 卖出后重置持续天数
                 consecutive_valid_days = 0
                 atr_growing_days = 0
+                volatility_growing_days = 0
         
         # 计算当前市值
         market_value = cash + position * close_price if position > 0 else cash
