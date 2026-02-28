@@ -9,15 +9,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "000002"
+STOCK_CODE = "603083"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
 
 CACHE_DAYS = 365 * 10  # 缓存10年数据
-BACKTEST_YEARS = 3  # 回测默认5年（所有程序统一使用）
+BACKTEST_YEARS = 2  # 回测默认5年（所有程序统一使用）
 
-END_DATE = pd.to_datetime("20260211")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+END_DATE = pd.to_datetime("20260227")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 
 TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
