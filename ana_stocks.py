@@ -9,15 +9,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "603083"
+STOCK_CODE = "002714"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
 
 CACHE_DAYS = 365 * 10  # 缓存10年数据
-BACKTEST_YEARS = 2  # 回测默认5年（所有程序统一使用）
+BACKTEST_YEARS = 10  # 回测默认5年（所有程序统一使用）
 
-END_DATE = pd.to_datetime("20260227")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+END_DATE = pd.to_datetime("20260302")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 
 TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
@@ -113,13 +113,17 @@ def aggregate_weekly(daily_data: pd.DataFrame) -> pd.DataFrame:
     }).reset_index()
     
     weekly_data = weekly_data.sort_values(date_col).reset_index(drop=True)
+    
+    # 添加周序号（从1开始）
+    weekly_data['周序号'] = range(1, len(weekly_data) + 1)
+    
     weekly_data.rename(columns={
-        date_col: 'date',
-        open_col: 'open',
-        close_col: 'close',
-        high_col: 'high',
-        low_col: 'low',
-        vol_col: 'volume'
+        date_col: '日期',
+        open_col: '开盘价',
+        close_col: '收盘价',
+        high_col: '最高价',
+        low_col: '最低价',
+        vol_col: '成交量'
     }, inplace=True)
     
     return weekly_data
@@ -156,8 +160,18 @@ def ensure_daily_cache(stock_code: str = STOCK_CODE, max_retries: int = 5, retry
                     start_date=start_date,
                     end_date=end_date
                 )
+                adj_factor = ts.pro_api().adj_factor(
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date
+                )
             else:
                 daily_data = pro.daily(
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                adj_factor = pro.adj_factor(
                     ts_code=ts_code,
                     start_date=start_date,
                     end_date=end_date
@@ -174,6 +188,24 @@ def ensure_daily_cache(stock_code: str = STOCK_CODE, max_retries: int = 5, retry
                 raise e
     
     daily_data['date'] = pd.to_datetime(daily_data['trade_date'])
+    
+    # 合并复权因子
+    if adj_factor is not None and not adj_factor.empty:
+        adj_factor['trade_date'] = adj_factor['trade_date'].astype(str)
+        daily_data['trade_date'] = daily_data['trade_date'].astype(str)
+        daily_data = daily_data.merge(
+            adj_factor[['trade_date', 'adj_factor']], 
+            on='trade_date', 
+            how='left'
+        )
+        
+        # 计算后复权价格（以最新交易日为基准）
+        # 后复权价格 = 当日价格 × 当日复权因子 / 最新复权因子
+        latest_adj_factor = daily_data['adj_factor'].iloc[0]  # 最新日期在最前面
+        price_cols = ['open', 'close', 'high', 'low']
+        for col in price_cols:
+            if col in daily_data.columns:
+                daily_data[col] = daily_data[col] * daily_data['adj_factor'] / latest_adj_factor
     
     if 'open' in daily_data.columns:
         daily_data.rename(columns={
@@ -210,11 +242,11 @@ def get_weekly_data(
             end_date = end
     
     weekly_data = weekly_data.copy()
-    weekly_data['date'] = pd.to_datetime(weekly_data['date'], errors='coerce')
+    weekly_data['日期'] = pd.to_datetime(weekly_data['日期'], errors='coerce')
     start_ts = pd.to_datetime(start_date)
     end_ts = pd.to_datetime(end_date)
     
-    mask = (weekly_data['date'] >= start_ts) & (weekly_data['date'] <= end_ts)
+    mask = (weekly_data['日期'] >= start_ts) & (weekly_data['日期'] <= end_ts)
     filtered = weekly_data[mask]
     
     return filtered.reset_index(drop=True)
@@ -247,7 +279,14 @@ def get_daily_data(
 
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df['ma20'] = df['close'].rolling(20).mean()
+    # 根据列名判断使用中文还是英文
+    if '收盘' in df.columns:
+        close_col = '收盘'
+    elif '收盘价' in df.columns:
+        close_col = '收盘价'
+    else:
+        close_col = 'close'
+    df['ma20'] = df[close_col].rolling(20).mean()
     return df
 
 
@@ -286,7 +325,12 @@ def print_weekly_report(weekly_data: pd.DataFrame, avg_data_list: List[Tuple[int
     print("-" * 35)
     
     for _, row in weekly_data.iterrows():
-        date_str = row['日期'].strftime('%Y-%m-%d')
+        # 处理日期格式（可能是字符串或datetime对象）
+        date_val = row['日期']
+        if isinstance(date_val, str):
+            date_str = date_val[:10]
+        else:
+            date_str = date_val.strftime('%Y-%m-%d')
         print(f"{row['周序号']:<8} {date_str:<12} {row['收盘价']:>10.2f}")
     
     print("\n" + "=" * 60)

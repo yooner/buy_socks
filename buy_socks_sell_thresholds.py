@@ -35,10 +35,16 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
     weekly_data = calculate_indicators(weekly_data)
     
-    prev_close = weekly_data['close'].shift(1)
-    tr1 = weekly_data['high'] - weekly_data['low']
-    tr2 = (weekly_data['high'] - prev_close).abs()
-    tr3 = (weekly_data['low'] - prev_close).abs()
+    # 根据列名判断使用中文还是英文
+    close_col = '收盘价' if '收盘价' in weekly_data.columns else 'close'
+    high_col = '最高价' if '最高价' in weekly_data.columns else 'high'
+    low_col = '最低价' if '最低价' in weekly_data.columns else 'low'
+    date_col = '日期' if '日期' in weekly_data.columns else 'date'
+    
+    prev_close = weekly_data[close_col].shift(1)
+    tr1 = weekly_data[high_col] - weekly_data[low_col]
+    tr2 = (weekly_data[high_col] - prev_close).abs()
+    tr3 = (weekly_data[low_col] - prev_close).abs()
     weekly_data['TR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     weekly_data['ATR_14'] = weekly_data['TR'].rolling(14).mean()
 
@@ -70,9 +76,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     for week_idx in range(len(weekly_data)):
         current_week = week_idx + 1
         row = weekly_data.iloc[week_idx]
-        current_price = row['close']
-        current_date = row['date'].strftime('%Y-%m-%d')
-        current_year = row['date'].year
+        current_price = row[close_col]
+        current_date = row[date_col].strftime('%Y-%m-%d')
+        current_year = row[date_col].year
 
         price_history.append(current_price)
         ma20 = row['ma20'] if pd.notna(row['ma20']) else calculate_ma20(price_history)
@@ -177,7 +183,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
         yearly_summary[current_year]['end_asset'] = total_asset
 
     print(f"\n{'='*80}")
-    final_asset = left_cash + shares * weekly_data.iloc[-1]['close']
+    final_asset = left_cash + shares * weekly_data.iloc[-1][close_col]
     print(f"\n{'='*80}")
     print(f"起始资金: {INITIAL_CAPITAL:.2f} 元")
     print(f"最终资产: {final_asset:.2f} 元")
