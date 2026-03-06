@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "002714"
+STOCK_CODE = "600875"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
@@ -17,8 +17,19 @@ INITIAL_CAPITAL_EXPORT = 100000
 CACHE_DAYS = 365 * 10  # 缓存10年数据
 BACKTEST_YEARS = 10  # 回测默认5年（所有程序统一使用）
 
-END_DATE = pd.to_datetime("20260302")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+END_DATE = pd.to_datetime("20260305")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
+
+# 回测日期范围配置（可选，用于指定回测区间，不影响缓存）
+# 设置为 None 则使用默认的 BACKTEST_YEARS 计算回测区间
+# 示例: BACKTEST_START_DATE = pd.to_datetime("20200101")
+BACKTEST_START_DATE = None  # 回测开始日期
+BACKTEST_END_DATE = None    # 回测结束日期
+
+BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
+BACKTEST_END_DATE = pd.to_datetime("20230302")   # 回测结束日期
+# BACKTEST_END_DATE = pd.to_datetime("20221207")   # 回测结束日期
+
 
 TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
 if TS_TOKEN:
@@ -230,9 +241,17 @@ def get_weekly_data(
     end_date: str = None,
     days: int = BACKTEST_YEARS * 365
 ) -> pd.DataFrame:
-    """从缓存获取日线，聚合为周线，按日期范围筛选返回"""
+    """从缓存获取日线，聚合为周线，按日期范围筛选返回
+    优先级: 传入参数 > BACKTEST_START_DATE/BACKTEST_END_DATE > 默认计算
+    """
     daily_data = ensure_daily_cache(stock_code)
     weekly_data = aggregate_weekly(daily_data)
+    
+    # 确定回测日期范围（优先级: 传入参数 > 全局配置 > 默认计算）
+    if start_date is None and BACKTEST_START_DATE is not None:
+        start_date = BACKTEST_START_DATE
+    if end_date is None and BACKTEST_END_DATE is not None:
+        end_date = BACKTEST_END_DATE
     
     if start_date is None or end_date is None:
         start, end = get_date_range(days)
@@ -258,8 +277,16 @@ def get_daily_data(
     end_date: str = None,
     days: int = BACKTEST_YEARS * 365
 ) -> pd.DataFrame:
-    """从缓存获取日线数据"""
+    """从缓存获取日线数据
+    优先级: 传入参数 > BACKTEST_START_DATE/BACKTEST_END_DATE > 默认计算
+    """
     daily_data = ensure_daily_cache(stock_code)
+    
+    # 确定回测日期范围（优先级: 传入参数 > 全局配置 > 默认计算）
+    if start_date is None and BACKTEST_START_DATE is not None:
+        start_date = BACKTEST_START_DATE
+    if end_date is None and BACKTEST_END_DATE is not None:
+        end_date = BACKTEST_END_DATE
     
     if start_date is None or end_date is None:
         start, end = get_date_range(days)
@@ -293,6 +320,8 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 STOCK_CODE_EXPORT = STOCK_CODE
 BACKTEST_YEARS_EXPORT = BACKTEST_YEARS
 END_DATE_EXPORT = END_DATE
+BACKTEST_START_DATE_EXPORT = BACKTEST_START_DATE
+BACKTEST_END_DATE_EXPORT = BACKTEST_END_DATE
 ensure_daily_cache = ensure_daily_cache
 aggregate_weekly = aggregate_weekly
 get_year_range = get_year_range
