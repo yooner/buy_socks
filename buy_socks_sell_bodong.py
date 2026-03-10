@@ -51,9 +51,15 @@ ENABLE_CONDITION_C = True  # 设置为False可关闭条件C买入
 # 买入条件全局参数
 BUY_DECLINE_DAYS_REQUIRED = 2  # 波动率连续向0靠近所需天数（条件A）
 
-# 条件C参数（新逻辑：close > 20日最高价 AND ATR14 > ATR14的20日均线）
-# 旧的波动率条件已废弃，保留开关用于兼容
-ENABLE_CONDITION_C = True  # 条件C买入总开关
+# 条件C参数
+BUY_CONDITION_C_DAYS = 4       # 波动率>1的连续天数要求
+BUY_CONDITION_C_VOL_THRESHOLD = 0.85  # 波动率阈值（用于计数）
+
+# 条件C分仓买入参数
+CONDITION_C_POSITION_THRESHOLD = 4  # 价ATR倍阈值，超过此值需要分仓买入（默认3）
+CONDITION_C_MA20_PCT_THRESHOLD = -20  # MA20幅%阈值，小于此值（如-10%）需要分仓买入（默认-10%）
+CONDITION_C_FIRST_POSITION_RATIO = 1/3 # 第一次买入比例（1/3仓）
+CONDITION_C_SECOND_POSITION_RATIO = 1/3  # 第二次买入比例（1/3仓）
 
 # 延迟买入开关
 ENABLE_DELAYED_BUY = True  # 设置为True启用延迟买入模式）
@@ -69,11 +75,6 @@ DELAYED_SELL_POSITION_RATIO = 1/2  # 每次卖出1/2
 # 持仓期间价格追踪止损开关
 ENABLE_STOP_LOSS = True  # 设置为True启用持仓期间价格追踪止损策略
 STOP_LOSS_MA20_THRESHOLD = -7 # MA20阈值%，价格低于MA20但在阈值范围内不卖出（默认-5%，即低于MA20 5%以内不卖出）
-
-# 条件C的ATR跟踪止损参数
-ENABLE_CONDITION_C_TRAILING_STOP = True  # 设置为True启用条件C的ATR跟踪止损
-CONDITION_C_TRAILING_STOP_N = 3  # ATR倍数，默认3
-CONDITION_C_TRAILING_STOP_PERIOD = 5  # 最高价计算周期，默认5日
 
 # 买入A五日最高条件开关
 ENABLE_BUY_A_5DAY_HIGH_CHECK = True  # 设置为True启用：买入A时如果收盘价是五日最高则延迟买入，等待价格回调后再上涨时买入
@@ -155,14 +156,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
     # 计算五日收盘最高价和最低价
     df['5日最高'] = df['收盘'].rolling(window=5, min_periods=1).max()
     df['5日最低'] = df['收盘'].rolling(window=5, min_periods=1).min()
-    
-    # 计算20日最高价（用于新的条件C买入逻辑）
-    df['20日最高'] = df['最高'].rolling(window=20, min_periods=20).max()
-    # 前一日20日最高（不含今天）
-    df['20日最高_昨日'] = df['20日最高'].shift(1)
-    
-    # 计算ATR的20日均线（用于新的条件C买入逻辑）
-    df['atr14_ma20'] = df['atr14'].rolling(window=20, min_periods=20).mean()
 
     # 初始化交易变量
     initial_capital = 100000
@@ -175,6 +168,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
     # 买入条件计数器
     volatility_declining_days = 0  # 波动率连续向0靠近天数（数值变大）
     prev_volatility = None         # 前一天波动率
+    volatility_above_one_days = 0  # 波动率在1以上的连续天数
     is_condition_c_trade = False   # 标记是否为条件C买入的交易
     
     # 延迟买入状态变量
@@ -199,10 +193,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
     
     # 镜像虚拟仓状态变量（用于独立运行原卖出逻辑）
     virtual_position = 0           # 虚拟仓持仓数量（完全镜像实际仓，只是不触发止损）
-    
-    # 条件C的ATR跟踪止损状态变量
-    condition_c_highest_price = 0   # 条件C买入后的最高价（用于计算跟踪止损）
-    condition_c_trailing_stop = 0   # 当前跟踪止损价格
+
+    # 条件C分仓买入状态变量
+    condition_c_position_stage = 0  # 分仓买入阶段：0=未开始, 1=已买第一批, 2=已买第二批, 3=已全仓
+    condition_c_prev_price = 0      # 条件C买入前一天的价格（用于判断第二批买入）
+    condition_c_prev_ma20_pct = 0   # 条件C买入前一天的MA20幅%（用于判断MA20幅%是否变得更负）
 
     # 收集所有输出内容
     output_lines = []
@@ -219,9 +214,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"回测区间: {start_year} - {end_year} ({BACKTEST_YEARS}年)")
     log_print(f"起始资金: {initial_capital:,.2f}")
     log_print(f"买入条件A: (连续向0靠近{BUY_DECLINE_DAYS_REQUIRED}天且波动率<0) - 全仓买入")
-    log_print(f"买入条件C: (收盘价>20日最高价 AND ATR14>ATR14的20日均线) - 满仓买入")
+    log_print(f"买入条件C: (波动率>{BUY_CONDITION_C_VOL_THRESHOLD}连续第{BUY_CONDITION_C_DAYS}天) - 分仓买入(价ATR倍>{CONDITION_C_POSITION_THRESHOLD}或MA20幅%<{CONDITION_C_MA20_PCT_THRESHOLD}%时分3批)")
     stop_loss_str = "; 持仓价格追踪止损" if ENABLE_STOP_LOSS else ""
-    log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖；条件C买入使用ATR跟踪止损{stop_loss_str}")
+    log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖；条件C买入需等>{BUY_CONDITION_C_VOL_THRESHOLD}天数归0才卖{stop_loss_str}")
     if ENABLE_DELAYED_SELL:
         pos_sell_str = ""
         if ENABLE_DELAYED_SELL_POSITION_SELL:
@@ -230,11 +225,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
         log_print(f"延迟卖出: 触发条件后记录卖出点，收盘价低于卖出点时卖出，价格更高时更新卖出价{pos_sell_str}")
     if ENABLE_STOP_LOSS:
         log_print(f"持仓止损: 买入后第二天收盘价<MA20时启动价格追踪，低于MA20 {abs(STOP_LOSS_MA20_THRESHOLD)}%才卖出，防止震荡")
-    if ENABLE_CONDITION_C_TRAILING_STOP:
-        log_print(f"条件C跟踪止损: 使用{CONDITION_C_TRAILING_STOP_PERIOD}日最高价-{CONDITION_C_TRAILING_STOP_N}×ATR作为跟踪止损线，跌破即卖出")
     log_print(f"{'='*175}\n")
 
-    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'20日最高':>8} {'操作':<12} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'>1天数':>6} {'操作':<12} {'持仓':>8} {'市值':>12}"
     log_print(header)
     log_print("-" * 195)
     
@@ -264,24 +257,16 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 elif volatility < prev_volatility:
                     is_volatility_declining = True
             
+            # 更新波动率在阈值以上的连续天数（必须在卖出判断之前更新）
+            if volatility > BUY_CONDITION_C_VOL_THRESHOLD:
+                volatility_above_one_days += 1
+            else:
+                volatility_above_one_days = 0
+
             # 卖出策略
             should_sell = False
             sell_reason = ""
             is_stop_loss_triggered = False  # 标记是否触发新的价格追踪止损
-            
-            # 条件C的ATR跟踪止损（独立于其他止损机制）
-            if ENABLE_CONDITION_C_TRAILING_STOP and is_condition_c_trade and position > 0:
-                # 更新最高价（使用5日最高价）
-                high_5day = row['5日最高']
-                if high_5day > condition_c_highest_price:
-                    condition_c_highest_price = high_5day
-                    # 更新跟踪止损价格
-                    condition_c_trailing_stop = condition_c_highest_price - CONDITION_C_TRAILING_STOP_N * row['atr14']
-                
-                # 检查是否跌破跟踪止损
-                if close_price < condition_c_trailing_stop:
-                    should_sell = True
-                    sell_reason = f"C跟踪止损({condition_c_trailing_stop:.2f})"
             
             # 新的持仓期间价格追踪止损策略（开关打开时启用）
             if ENABLE_STOP_LOSS and position > 0:
@@ -347,8 +332,14 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                     # 继续下跌，保持持仓等待虚拟仓卖出
             
             # 其他卖出条件（仅在未触发价格追踪止损时检查）
-            # 注意：条件C买入的交易使用ATR跟踪止损，不再使用波动率天数归0卖出
-            if not is_stop_loss_triggered and position > 0 and not is_condition_c_trade:
+            # 注意：条件C买入的交易也支持价格追踪止损，优先级最高
+            if not is_stop_loss_triggered:
+                if is_condition_c_trade and position > 0:
+                    # 条件C买入的交易：只要volatility_above_one_days归0就卖出（不判断波动率是否降低）
+                    if volatility_above_one_days == 0:
+                        should_sell = True
+                        sell_reason = "C条件"
+                elif position > 0 and not is_condition_c_trade:
                     # 普通卖出条件1：波动率>0且降低，且降至前一天97%以下
                     if volatility > 0 and is_volatility_declining:
                         volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
@@ -380,9 +371,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     is_condition_c_trade = False
                     # 重置计数器
                     volatility_declining_days = 0
-                    # 重置条件C跟踪止损状态
-                    condition_c_highest_price = 0
-                    condition_c_trailing_stop = 0
+                    volatility_above_one_days = 0  # 卖出后重置C条件天数
+                    # 重置条件C分仓状态
+                    condition_c_position_stage = 0
+                    condition_c_prev_price = 0
+                    condition_c_prev_ma20_pct = 0
                     # 重置延迟状态
                     is_pending_buy = False
                     pending_buy_price = 0
@@ -445,8 +438,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                             buy_price = 0
                                             is_condition_c_trade = False
                                             volatility_declining_days = 0
-                                            condition_c_highest_price = 0
-                                            condition_c_trailing_stop = 0
+                                            volatility_above_one_days = 0
+                                            condition_c_position_stage = 0
+                                            condition_c_prev_price = 0
+                                            condition_c_prev_ma20_pct = 0
                                             is_pending_buy = False
                                             pending_buy_price = 0
                                             pending_buy_condition = ""
@@ -484,9 +479,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         is_condition_c_trade = False
                         # 重置计数器
                         volatility_declining_days = 0
-                        # 重置条件C跟踪止损状态
-                        condition_c_highest_price = 0
-                        condition_c_trailing_stop = 0
+                        volatility_above_one_days = 0  # 卖出后重置C条件天数
+                        # 重置条件C分仓状态
+                        condition_c_position_stage = 0
+                        condition_c_prev_price = 0
                         # 重置延迟状态
                         is_pending_buy = False
                         pending_buy_price = 0
@@ -535,9 +531,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         is_condition_c_trade = False
                         # 卖出后重置计数器
                         volatility_declining_days = 0
-                        # 重置条件C跟踪止损状态
-                        condition_c_highest_price = 0
-                        condition_c_trailing_stop = 0
+                        volatility_above_one_days = 0  # 卖出后重置C条件天数
+                        # 重置条件C分仓状态
+                        condition_c_position_stage = 0
+                        condition_c_prev_price = 0
                         # 重置延迟买入状态
                         is_pending_buy = False
                         pending_buy_price = 0
@@ -561,8 +558,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 virtual_should_sell = False
                 
                 # 虚拟仓只使用原卖出逻辑（不检查止损），使用实际仓的is_condition_c_trade状态
-                # 条件C现在使用ATR跟踪止损，虚拟仓不再单独处理
-                if not is_condition_c_trade:
+                if is_condition_c_trade:
+                    # 条件C买入的交易：只要volatility_above_one_days归0就卖出
+                    if volatility_above_one_days == 0:
+                        virtual_should_sell = True
+                else:
                     # 普通卖出条件1：波动率>0且降低，且降至前一天97%以下
                     if volatility > 0 and is_volatility_declining:
                         volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
@@ -574,8 +574,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     virtual_position = 0
                     # 重置所有计数器（等同于实际卖出后的重置）
                     volatility_declining_days = 0
+                    volatility_above_one_days = 0  # 重置C条件天数
                     # 重置条件C标记
                     is_condition_c_trade = False
+                    # 重置条件C分仓状态
+                    condition_c_position_stage = 0
+                    condition_c_prev_price = 0
 
             # 更新前一天的波动率
             prev_volatility = volatility
@@ -591,10 +595,77 @@ def run_backtest(stock_code: str = STOCK_CODE):
             condition_a = (volatility_declining_days >= BUY_DECLINE_DAYS_REQUIRED and
                            volatility < 0)
             
-            # 条件C：收盘价 > 前一日20日最高价（不含今天） AND ATR14 > ATR14的20日均线
-            high_20_prev = row['20日最高_昨日'] if pd.notna(row['20日最高_昨日']) else 0
-            atr14_ma20 = row['atr14_ma20'] if pd.notna(row['atr14_ma20']) else 0
-            condition_c = ENABLE_CONDITION_C and (close_price > high_20_prev) and (row['atr14'] > atr14_ma20)
+            # 条件C：波动率>阈值连续指定天数（仅在开关打开时启用）
+            condition_c = ENABLE_CONDITION_C and volatility_above_one_days >= BUY_CONDITION_C_DAYS
+            
+            # 条件C分仓继续买入逻辑（在已有持仓且未全仓时）
+            if position > 0 and is_condition_c_trade and condition_c_position_stage in [1, 2]:
+                buy_price = close_price
+                current_ma20_pct = row['MA20幅度%'] if pd.notna(row['MA20幅度%']) else 0
+                
+                # 判断是否可以加仓的条件：
+                # 1. 价格 > 前一天价格
+                # 2. MA20幅% 没有变得更负（即 current_ma20_pct >= condition_c_prev_ma20_pct）
+                price_increasing = close_price > condition_c_prev_price
+                ma20_pct_not_worsening = current_ma20_pct >= condition_c_prev_ma20_pct  # MA20幅%没有变得更负
+                
+                if condition_c_position_stage == 1:
+                    # 判断是否可以买入C2
+                    if price_increasing and ma20_pct_not_worsening:
+                        # 第二批买入 1/3
+                        new_position = int(cash * CONDITION_C_SECOND_POSITION_RATIO / buy_price)
+                        if new_position > 0:
+                            additional_position = new_position
+                            cost = additional_position * buy_price
+                            cash -= cost
+                            position += additional_position
+                            trade_count += 1
+                            condition_c_position_stage = 2
+                            condition_c_prev_price = buy_price
+                            condition_c_prev_ma20_pct = current_ma20_pct
+                            action = f"买入C2@{buy_price:.2f}(涨,幅{current_ma20_pct:.1f}%)"
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '买入',
+                                'price': buy_price,
+                                'shares': additional_position,
+                                'is_condition_c': True
+                            })
+                    elif price_increasing and not ma20_pct_not_worsening:
+                        # 价格上涨但MA20幅%变得更负，更新参考价格但不买入
+                        condition_c_prev_price = buy_price
+                        condition_c_prev_ma20_pct = current_ma20_pct
+                        action = f"更新C参考@{buy_price:.2f}(幅{current_ma20_pct:.1f}%)"
+                    # 如果价格没有上涨，不更新参考价格，保持当前持仓
+                elif condition_c_position_stage == 2:
+                    # 第三批买入，满仓（同样需要价格上涨且MA20幅%没有变得更负）
+                    if price_increasing and ma20_pct_not_worsening:
+                        new_position = int(cash / buy_price)
+                        if new_position > 0:
+                            additional_position = new_position
+                            cost = additional_position * buy_price
+                            cash -= cost
+                            position += additional_position
+                            trade_count += 1
+                            condition_c_position_stage = 3
+                            condition_c_prev_price = buy_price
+                            condition_c_prev_ma20_pct = current_ma20_pct
+                            action = f"买入C3@{buy_price:.2f}(满仓,幅{current_ma20_pct:.1f}%)"
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '买入',
+                                'price': buy_price,
+                                'shares': additional_position,
+                                'is_condition_c': True
+                            })
+                    elif price_increasing and not ma20_pct_not_worsening:
+                        # 价格上涨但MA20幅%变得更负，更新参考价格但不买入
+                        condition_c_prev_price = buy_price
+                        condition_c_prev_ma20_pct = current_ma20_pct
+                        action = f"更新C参考@{buy_price:.2f}(幅{current_ma20_pct:.1f}%)"
+                    # 如果价格没有上涨，不更新参考价格，保持当前持仓
             
             # 价格追踪期间的延迟买入触发逻辑（只在价格追踪期间且开关打开时启用）
             # 注意：价格追踪期间的买入不需要波动率条件，只需要价格条件
@@ -688,28 +759,63 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
                 # 正常买入逻辑（无待买入时）
                 elif not is_pending_buy:
-                    # 条件C买入（满仓）
+                    # 条件C买入（支持分仓）
                     if condition_c:
                         buy_price = close_price
                         price_atr_ratio = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+                        ma20_pct = row['MA20幅度%'] if pd.notna(row['MA20幅度%']) else 0
                         
-                        # 条件C买入满仓
-                        new_position = int(cash / buy_price)
-                        if new_position > 0:
-                            position = new_position
-                            cost = position * buy_price
-                            cash -= cost
-                            trade_count += 1
-                            is_condition_c_trade = True
-                            action = f"买入C@{buy_price:.2f}(倍{price_atr_ratio:.1f})"
-                            trades.append({
-                                'day': day_num,
-                                'date': date_str,
-                                'action': '买入',
-                                'price': buy_price,
-                                'shares': position,
-                                'is_condition_c': True
-                            })
+                        # 判断触发条件（用于显示）
+                        trigger_by_atr = price_atr_ratio > CONDITION_C_POSITION_THRESHOLD
+                        trigger_by_ma20 = ma20_pct < CONDITION_C_MA20_PCT_THRESHOLD
+                        trigger_type = "倍" if trigger_by_atr else "幅"
+                        trigger_value = price_atr_ratio if trigger_by_atr else ma20_pct
+                        
+                        # 分仓买入条件：价ATR倍 > 阈值 或 MA20幅% < 阈值（或的关系） 或 价格在MA20以上（ma20_pct > 0）
+                        need_position_buy = (price_atr_ratio > CONDITION_C_POSITION_THRESHOLD or 
+                                            ma20_pct < CONDITION_C_MA20_PCT_THRESHOLD or
+                                            ma20_pct > 0)
+                        
+                        if need_position_buy:
+                            # 第一批买入 1/3
+                            new_position = int(cash * CONDITION_C_FIRST_POSITION_RATIO / buy_price)
+                            if new_position > 0:
+                                position = new_position
+                                cost = position * buy_price
+                                cash -= cost
+                                trade_count += 1
+                                is_condition_c_trade = True
+                                condition_c_position_stage = 1
+                                condition_c_prev_price = buy_price
+                                condition_c_prev_ma20_pct = ma20_pct  # 记录初始MA20幅%
+                                action = f"买入C1@{buy_price:.2f}({trigger_type}{trigger_value:.1f})"
+                                trades.append({
+                                    'day': day_num,
+                                    'date': date_str,
+                                    'action': '买入',
+                                    'price': buy_price,
+                                    'shares': position,
+                                    'is_condition_c': True
+                                })
+                        else:
+                            # 不满足分仓条件，全仓买入
+                            new_position = int(cash / buy_price)
+                            if new_position > 0:
+                                position = new_position
+                                cost = position * buy_price
+                                cash -= cost
+                                trade_count += 1
+                                is_condition_c_trade = True
+                                condition_c_position_stage = 3  # 标记为已全仓
+                                action = f"买入C@{buy_price:.2f}(全仓)"
+                                trades.append({
+                                    'day': day_num,
+                                    'date': date_str,
+                                    'action': '买入',
+                                    'price': buy_price,
+                                    'shares': position,
+                                    'is_condition_c': True
+                                })
 
                         # 初始化持仓期间价格追踪变量
                         if position > 0 and hold_days == 0:
@@ -717,11 +823,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             highest_price_since_buy = 0
                             lowest_price_since_buy = 0
                             price_trend_direction = None
-                        
-                        # 初始化条件C的ATR跟踪止损
-                        if ENABLE_CONDITION_C_TRAILING_STOP and is_condition_c_trade:
-                            condition_c_highest_price = close_price
-                            condition_c_trailing_stop = close_price - CONDITION_C_TRAILING_STOP_N * row['atr14']
                             # 初始化延迟卖出分批卖出状态
                             delayed_sell_position_stage = 0
                             # 同步更新虚拟仓（完全镜像）
@@ -784,9 +885,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
         high_5day_str = f"{row['5日最高']:.2f}" if pd.notna(row['5日最高']) else "N/A"
         low_5day_str = f"{row['5日最低']:.2f}" if pd.notna(row['5日最低']) else "N/A"
-        high_20day_str = f"{row['20日最高']:.2f}" if pd.notna(row['20日最高']) else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {high_20day_str:>8} {action:<12} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {volatility_above_one_days:>6} {action:<12} {position_str:>8} {market_value:>12,.2f}")
     
     # 计算最终收益
     final_value = cash + position * df.iloc[-1]['收盘'] if position > 0 else cash
@@ -930,7 +1030,19 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     })
         
         # 5. 条件C卖出（仅在非待卖出状态时计算）
-        # 条件C现在使用ATR跟踪止损，不再基于波动率阈值卖出
+        if is_condition_c_trade and not is_pending_sell:
+            if pd.notna(last_atr14) and last_atr14 > 0 and len(df) >= 5:
+                ma20_t_minus_4 = df.iloc[-5]['ma20'] if pd.notna(df.iloc[-5]['ma20']) else last_ma20
+                target_volatility_c = BUY_CONDITION_C_VOL_THRESHOLD
+                target_ma20_change_c = target_volatility_c * last_atr14
+                target_price_c = (target_ma20_change_c + ma20_t_minus_4) * 20 - last_ma20 * 19
+                
+                sell_triggers.append({
+                    'name': '条件C卖出',
+                    'price': target_price_c,
+                    'condition': f'波动率降至{BUY_CONDITION_C_VOL_THRESHOLD}以下',
+                    'priority': 6
+                })
         
         # 按价格从高到低排序，找出最严格的触发条件
         # 用户想知道：价格低于多少会触发卖出

@@ -26,8 +26,8 @@ START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 BACKTEST_START_DATE = None  # 回测开始日期
 BACKTEST_END_DATE = None    # 回测结束日期
 
-BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
-BACKTEST_END_DATE = pd.to_datetime("20230302")   # 回测结束日期
+# BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
+# BACKTEST_END_DATE = pd.to_datetime("20230302")   # 回测结束日期
 # BACKTEST_END_DATE = pd.to_datetime("20221207")   # 回测结束日期
 
 
