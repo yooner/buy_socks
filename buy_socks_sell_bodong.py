@@ -67,10 +67,11 @@ ENABLE_DELAYED_BUY = True  # 设置为True启用延迟买入模式）
 # 延迟卖出开关
 ENABLE_DELAYED_SELL = True  # 设置为True启用延迟卖出模式
 
-# 延迟卖出期间分批卖出开关
-ENABLE_DELAYED_SELL_POSITION_SELL = False  # 设置为True启用：待卖出状态下分批卖出机制
-DELAYED_SELL_POSITION_THRESHOLDS = [0.15, 0.18]  # 盈利25%、30%、35%时分批卖出
-DELAYED_SELL_POSITION_RATIO = 1/2  # 每次卖出1/2
+# C3分批卖出开关（条件C全仓后跌破20日高价时分批卖出）
+ENABLE_C3_PARTIAL_SELL = True  # 设置为True启用C3分批卖出机制
+C3_PARTIAL_SELL_RATIO = 1/2  # 每次卖出1/4（可配置）
+C3_SELL_STAGES = 2  # 分4次卖完
+C_FULL_BUY_HIGH_20_THRESHOLD = 0.97  # 全仓买入C触发分批卖出的20日高价阈值（默认0.97，即满仓价格>=20日最高价*0.97时触发）
 
 # 持仓期间价格追踪止损开关
 ENABLE_STOP_LOSS = True  # 设置为True启用持仓期间价格追踪止损策略
@@ -156,6 +157,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     # 计算五日收盘最高价和最低价
     df['5日最高'] = df['收盘'].rolling(window=5, min_periods=1).max()
     df['5日最低'] = df['收盘'].rolling(window=5, min_periods=1).min()
+    
+    # 计算20日收盘最高价
+    df['20日最高'] = df['收盘'].rolling(window=20, min_periods=1).max()
 
     # 初始化交易变量
     initial_capital = 100000
@@ -188,9 +192,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
     lowest_price_since_buy = 0     # 买入后最低价（用于下跌趋势追踪）
     price_trend_direction = None   # 价格趋势方向: 'up'(上涨), 'down'(下跌), None(未确定)
     
-    # 延迟卖出期间分批卖出状态
-    delayed_sell_position_stage = 0  # 分批卖出阶段：0=未开始, 1=已卖第一批, 2=已卖第二批, 3=已卖第三批(清仓)
-    
     # 镜像虚拟仓状态变量（用于独立运行原卖出逻辑）
     virtual_position = 0           # 虚拟仓持仓数量（完全镜像实际仓，只是不触发止损）
 
@@ -198,6 +199,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
     condition_c_position_stage = 0  # 分仓买入阶段：0=未开始, 1=已买第一批, 2=已买第二批, 3=已全仓
     condition_c_prev_price = 0      # 条件C买入前一天的价格（用于判断第二批买入）
     condition_c_prev_ma20_pct = 0   # 条件C买入前一天的MA20幅%（用于判断MA20幅%是否变得更负）
+    
+    # C条件分批卖出状态变量（适用于所有C条件买入，但仅在满仓后触发）
+    c_sell_stage = 0  # C条件分批卖出阶段：0=未开始, 1=已卖第一批, 2=已卖第二批, 3=已卖第三批, 4=已全部卖完
+    c_full_buy_price = 0   # C条件满仓买入当天的价格
+    c_full_buy_high_20 = 0 # C条件满仓买入当天的20日最高价
 
     # 收集所有输出内容
     output_lines = []
@@ -217,17 +223,14 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"买入条件C: (波动率>{BUY_CONDITION_C_VOL_THRESHOLD}连续第{BUY_CONDITION_C_DAYS}天) - 分仓买入(价ATR倍>{CONDITION_C_POSITION_THRESHOLD}或MA20幅%<{CONDITION_C_MA20_PCT_THRESHOLD}%时分3批)")
     stop_loss_str = "; 持仓价格追踪止损" if ENABLE_STOP_LOSS else ""
     log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖；条件C买入需等>{BUY_CONDITION_C_VOL_THRESHOLD}天数归0才卖{stop_loss_str}")
-    if ENABLE_DELAYED_SELL:
-        pos_sell_str = ""
-        if ENABLE_DELAYED_SELL_POSITION_SELL:
-            thresholds_str = "/".join([f"{int(t*100)}%" for t in DELAYED_SELL_POSITION_THRESHOLDS])
-            pos_sell_str = f"；更新卖价时达到{thresholds_str}盈利分批卖出各1/3"
-        log_print(f"延迟卖出: 触发条件后记录卖出点，收盘价低于卖出点时卖出，价格更高时更新卖出价{pos_sell_str}")
+    if ENABLE_C3_PARTIAL_SELL:
+        log_print(f"C条件分批卖出: 全仓后跌破20日高价且满仓价>={int(C_FULL_BUY_HIGH_20_THRESHOLD*100)}%20日高时分{C3_SELL_STAGES}批卖出，每次卖出{int(C3_PARTIAL_SELL_RATIO*100)}%（最低优先级）")
     if ENABLE_STOP_LOSS:
         log_print(f"持仓止损: 买入后第二天收盘价<MA20时启动价格追踪，低于MA20 {abs(STOP_LOSS_MA20_THRESHOLD)}%才卖出，防止震荡")
+        log_print(f"C条件价格追踪: 买入C后第二天价格<MA20时不启动价格追踪（仅A条件买入启动价格追踪）")
     log_print(f"{'='*175}\n")
 
-    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'>1天数':>6} {'操作':<12} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'20日最高':>8} {'>1天数':>6} {'操作':<12} {'持仓':>8} {'市值':>12}"
     log_print(header)
     log_print("-" * 195)
     
@@ -285,7 +288,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         is_below_ma20 = close_price < ma20
                         is_first_day_above_ma20 = (prev_day_close < prev_day_ma20) and (close_price > ma20)
                         
-                        if is_below_ma20 or is_first_day_above_ma20:
+                        # C条件买入特殊处理：如果价格低于MA20，不启动价格追踪
+                        skip_price_track = False
+                        if is_condition_c_trade and is_below_ma20:
+                            skip_price_track = True
+                        
+                        if (is_below_ma20 or is_first_day_above_ma20) and not skip_price_track:
                             # 初始化价格追踪
                             highest_price_since_buy = close_price
                             lowest_price_since_buy = close_price
@@ -333,7 +341,19 @@ def run_backtest(stock_code: str = STOCK_CODE):
             
             # 其他卖出条件（仅在未触发价格追踪止损时检查）
             # 注意：条件C买入的交易也支持价格追踪止损，优先级最高
-            if not is_stop_loss_triggered:
+            # C条件分批卖出逻辑：C条件满仓后跌破20日高价时分批卖出（适用于所有C条件买入的持仓）
+            # 增加限定条件：C条件满仓买入当天价格 >= 20日最高价 * C_FULL_BUY_HIGH_20_THRESHOLD（默认0.97）
+            # 优先级：C条件分批卖出 > C条件卖出（分批卖出优先）
+            c_partial_sell_triggered = False
+            if ENABLE_C3_PARTIAL_SELL and is_condition_c_trade and position > 0 and condition_c_position_stage == 3:
+                high_20 = row['20日最高'] if pd.notna(row['20日最高']) else 0
+                # 检查C条件满仓买入当天是否满足条件：买入价格 >= 20日最高价 * 阈值（默认0.97）
+                c_full_buy_met_condition = c_full_buy_price >= c_full_buy_high_20 * C_FULL_BUY_HIGH_20_THRESHOLD if c_full_buy_price > 0 and c_full_buy_high_20 > 0 else False
+                if c_full_buy_met_condition and close_price < high_20 and c_sell_stage < C3_SELL_STAGES:
+                    c_partial_sell_triggered = True
+            
+            # C条件卖出检查（仅在未触发C条件分批卖出时检查）
+            if not is_stop_loss_triggered and not c_partial_sell_triggered:
                 if is_condition_c_trade and position > 0:
                     # 条件C买入的交易：只要volatility_above_one_days归0就卖出（不判断波动率是否降低）
                     if volatility_above_one_days == 0:
@@ -376,6 +396,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     condition_c_position_stage = 0
                     condition_c_prev_price = 0
                     condition_c_prev_ma20_pct = 0
+                    # 重置C条件分批卖出状态
+                    c_sell_stage = 0
+                    c_full_buy_price = 0
+                    c_full_buy_high_20 = 0
                     # 重置延迟状态
                     is_pending_buy = False
                     pending_buy_price = 0
@@ -387,8 +411,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     hold_days = 0
                     # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                     price_trend_direction = None
-                    # 重置延迟卖出分批卖出状态
-                    delayed_sell_position_stage = 0
                 
                 # 检查是否有待执行的延迟卖出（价格追踪止损不进入此逻辑）
                 elif is_pending_sell and ENABLE_DELAYED_SELL:
@@ -396,68 +418,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     if close_price > pending_sell_price:
                         pending_sell_price = close_price
                         action = f"更新卖价@{pending_sell_price:.2f}"
-                        
-                        # 延迟卖出期间分批卖出机制（独立开关）
-                        # 盈利相对于待卖出建立时的价格计算
-                        if ENABLE_DELAYED_SELL_POSITION_SELL and delayed_sell_position_stage < 3 and pending_sell_base_price > 0:
-                            # 计算相对于待卖出原始价格的盈利百分比
-                            profit_pct_from_pending = (close_price - pending_sell_base_price) / pending_sell_base_price
-                            
-                            # 检查所有已达到的阈值档位，依次执行卖出
-                            while delayed_sell_position_stage < 3:
-                                next_threshold_index = delayed_sell_position_stage
-                                if next_threshold_index >= len(DELAYED_SELL_POSITION_THRESHOLDS):
-                                    break
-                                
-                                next_threshold = DELAYED_SELL_POSITION_THRESHOLDS[next_threshold_index]
-                                
-                                if profit_pct_from_pending >= next_threshold:
-                                    # 达到阈值，执行分批卖出
-                                    sell_shares = int(position * DELAYED_SELL_POSITION_RATIO)
-                                    if sell_shares > 0 and position > 0:
-                                        sell_price = close_price
-                                        sell_value = sell_shares * sell_price
-                                        profit = (sell_price - buy_price) * sell_shares
-                                        cash += sell_value
-                                        position -= sell_shares
-                                        delayed_sell_position_stage += 1
-                                        
-                                        action = f"卖出{delayed_sell_position_stage}@{sell_price:.2f}(+{profit_pct_from_pending*100:.0f}%)"
-                                        trades.append({
-                                            'day': day_num,
-                                            'date': date_str,
-                                            'action': '卖出',
-                                            'price': sell_price,
-                                            'shares': sell_shares,
-                                            'profit': profit
-                                        })
-                                        
-                                        # 如果全部卖出，重置所有状态
-                                        if position <= 0:
-                                            position = 0
-                                            buy_price = 0
-                                            is_condition_c_trade = False
-                                            volatility_declining_days = 0
-                                            volatility_above_one_days = 0
-                                            condition_c_position_stage = 0
-                                            condition_c_prev_price = 0
-                                            condition_c_prev_ma20_pct = 0
-                                            is_pending_buy = False
-                                            pending_buy_price = 0
-                                            pending_buy_condition = ""
-                                            is_pending_sell = False
-                                            pending_sell_price = 0
-                                            pending_sell_base_price = 0
-                                            hold_days = 0
-                                            price_trend_direction = None
-                                            highest_price_since_buy = 0
-                                            lowest_price_since_buy = 0
-                                            delayed_sell_position_stage = 0
-                                            virtual_position = 0
-                                            break
-                                else:
-                                    # 未达到当前阈值，退出循环
-                                    break
                     # 如果收盘价低于待卖出价，执行卖出
                     elif close_price <= pending_sell_price:
                         sell_price = close_price
@@ -483,6 +443,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         # 重置条件C分仓状态
                         condition_c_position_stage = 0
                         condition_c_prev_price = 0
+                        # 重置C条件分批卖出状态
+                        c_sell_stage = 0
+                        c_full_buy_price = 0
+                        c_full_buy_high_20 = 0
                         # 重置延迟状态
                         is_pending_buy = False
                         pending_buy_price = 0
@@ -494,21 +458,20 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         hold_days = 0
                         # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                         price_trend_direction = None
-                        # 重置延迟卖出分批卖出状态
-                        delayed_sell_position_stage = 0
 
                         # 非止损卖出，同步清空虚拟仓
                         virtual_position = 0
                 
                 # 正常卖出逻辑（非延迟模式或触发卖出条件时）
                 elif should_sell:
-                    if ENABLE_DELAYED_SELL and not is_pending_sell:
-                        # 延迟卖出模式：记录卖出点但不真正卖出
+                    # C条件卖出立即执行，不受延迟卖出开关影响（最高优先级）
+                    # 普通卖出（比率卖出）受延迟卖出开关控制
+                    is_condition_c_sell = (sell_reason == "C条件")
+                    if ENABLE_DELAYED_SELL and not is_pending_sell and not is_condition_c_sell:
+                        # 延迟卖出模式：记录卖出点但不真正卖出（仅对普通卖出生效）
                         is_pending_sell = True
                         pending_sell_price = close_price
                         pending_sell_base_price = close_price  # 保存待卖出建立时的原始价格
-                        # 建立待卖出状态时，初始化分批卖出状态
-                        delayed_sell_position_stage = 0
                         action = f"待卖出@{pending_sell_price:.2f}"
                     else:
                         # 正常模式或已有待卖出：立即卖出
@@ -535,6 +498,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         # 重置条件C分仓状态
                         condition_c_position_stage = 0
                         condition_c_prev_price = 0
+                        # 重置C条件分批卖出状态
+                        c_sell_stage = 0
+                        c_full_buy_price = 0
+                        c_full_buy_high_20 = 0
                         # 重置延迟买入状态
                         is_pending_buy = False
                         pending_buy_price = 0
@@ -547,11 +514,57 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         hold_days = 0
                         # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                         price_trend_direction = None
-                        # 重置延迟卖出分批卖出状态
-                        delayed_sell_position_stage = 0
 
                         # 非止损卖出，同步清空虚拟仓
                         virtual_position = 0
+                
+                # C条件分批卖出逻辑（优先级高于C条件卖出，但低于止损和延迟卖出）
+                # 当C条件分批卖出触发时，优先执行分批卖出而不是C条件卖出
+                elif c_partial_sell_triggered and position > 0:
+                    # 计算本次卖出的股数
+                    sell_shares = int(position * C3_PARTIAL_SELL_RATIO)
+                    if sell_shares > 0:
+                        sell_price = close_price
+                        sell_value = sell_shares * sell_price
+                        profit = (sell_price - buy_price) * sell_shares
+                        cash += sell_value
+                        position -= sell_shares
+                        c_sell_stage += 1
+                        
+                        action = f"卖出C-{c_sell_stage}@{sell_price:.2f}(破20日高)"
+                        trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '卖出',
+                            'price': sell_price,
+                            'shares': sell_shares,
+                            'profit': profit
+                        })
+                        
+                        # 如果全部卖出，重置所有状态
+                        if position <= 0:
+                            position = 0
+                            buy_price = 0
+                            is_condition_c_trade = False
+                            volatility_declining_days = 0
+                            volatility_above_one_days = 0
+                            condition_c_position_stage = 0
+                            condition_c_prev_price = 0
+                            condition_c_prev_ma20_pct = 0
+                            c_sell_stage = 0
+                            c_full_buy_price = 0
+                            c_full_buy_high_20 = 0
+                            is_pending_buy = False
+                            pending_buy_price = 0
+                            pending_buy_condition = ""
+                            is_pending_sell = False
+                            pending_sell_price = 0
+                            pending_sell_base_price = 0
+                            hold_days = 0
+                            price_trend_direction = None
+                            highest_price_since_buy = 0
+                            lowest_price_since_buy = 0
+                            virtual_position = 0
             
             # 虚拟仓独立运行原卖出逻辑（不触发止损，使用实际仓的状态）
             if ENABLE_STOP_LOSS and virtual_position > 0 and position == 0:
@@ -580,6 +593,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     # 重置条件C分仓状态
                     condition_c_position_stage = 0
                     condition_c_prev_price = 0
+                    # 重置C条件分批卖出状态
+                    c_sell_stage = 0
+                    c_full_buy_price = 0
+                    c_full_buy_high_20 = 0
 
             # 更新前一天的波动率
             prev_volatility = volatility
@@ -651,6 +668,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             condition_c_position_stage = 3
                             condition_c_prev_price = buy_price
                             condition_c_prev_ma20_pct = current_ma20_pct
+                            # 记录C条件满仓买入当天的价格和20日最高价（用于分批卖出条件判断）
+                            c_full_buy_price = buy_price
+                            c_full_buy_high_20 = row['20日最高'] if pd.notna(row['20日最高']) else 0
                             action = f"买入C3@{buy_price:.2f}(满仓,幅{current_ma20_pct:.1f}%)"
                             trades.append({
                                 'day': day_num,
@@ -743,8 +763,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 highest_price_since_buy = 0
                                 lowest_price_since_buy = 0
                                 price_trend_direction = None
-                                # 初始化延迟卖出分批卖出状态
-                                delayed_sell_position_stage = 0
                                 # 同步更新虚拟仓
                                 virtual_position = position
                     else:
@@ -807,6 +825,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 trade_count += 1
                                 is_condition_c_trade = True
                                 condition_c_position_stage = 3  # 标记为已全仓
+                                # 记录C条件满仓买入当天的价格和20日最高价（用于分批卖出条件判断）
+                                c_full_buy_price = buy_price
+                                c_full_buy_high_20 = row['20日最高'] if pd.notna(row['20日最高']) else 0
                                 action = f"买入C@{buy_price:.2f}(全仓)"
                                 trades.append({
                                     'day': day_num,
@@ -823,8 +844,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             highest_price_since_buy = 0
                             lowest_price_since_buy = 0
                             price_trend_direction = None
-                            # 初始化延迟卖出分批卖出状态
-                            delayed_sell_position_stage = 0
                             # 同步更新虚拟仓（完全镜像）
                             virtual_position = position
 
@@ -867,8 +886,6 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 highest_price_since_buy = 0
                                 lowest_price_since_buy = 0
                                 price_trend_direction = None
-                                # 初始化延迟卖出分批卖出状态
-                                delayed_sell_position_stage = 0
                                 # 同步更新虚拟仓（完全镜像）
                                 virtual_position = position
         
@@ -885,8 +902,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
         high_5day_str = f"{row['5日最高']:.2f}" if pd.notna(row['5日最高']) else "N/A"
         low_5day_str = f"{row['5日最低']:.2f}" if pd.notna(row['5日最低']) else "N/A"
+        high_20day_str = f"{row['20日最高']:.2f}" if pd.notna(row['20日最高']) else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {volatility_above_one_days:>6} {action:<12} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {high_20day_str:>8} {volatility_above_one_days:>6} {action:<12} {position_str:>8} {market_value:>12,.2f}")
     
     # 计算最终收益
     final_value = cash + position * df.iloc[-1]['收盘'] if position > 0 else cash

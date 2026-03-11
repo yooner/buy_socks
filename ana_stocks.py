@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "002432"
+STOCK_CODE = "603496"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
@@ -17,7 +17,7 @@ INITIAL_CAPITAL_EXPORT = 100000
 CACHE_DAYS = 365 * 10  # 缓存10年数据
 BACKTEST_YEARS = 10  # 回测默认5年（所有程序统一使用）
 
-END_DATE = pd.to_datetime("20260305")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+END_DATE = pd.to_datetime("20260310")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 
 # 回测日期范围配置（可选，用于指定回测区间，不影响缓存）
@@ -28,8 +28,10 @@ BACKTEST_END_DATE = None    # 回测结束日期
 
 # BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
 # BACKTEST_END_DATE = pd.to_datetime("20230302")   # 回测结束日期
-# BACKTEST_END_DATE = pd.to_datetime("20221207")   # 回测结束日期
 
+BACKTEST_START_DATE = pd.to_datetime("20240302")  # 回测开始日期
+BACKTEST_END_DATE = pd.to_datetime("20260310")   # 回测结束日期
+# 
 
 TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
 if TS_TOKEN:
