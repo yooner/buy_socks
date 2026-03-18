@@ -22,7 +22,7 @@ INITIAL_CAPITAL = 100000  # 初始资金
 BUY_VOLUME_THRESHOLD = 150  # 成交量涨幅阈值（%），超过此值则买入
 
 # 卖出配置
-SELL_CONSECUTIVE_DAYS = 3  # 连续几天成交量正增长
+SELL_CONSECUTIVE_DAYS = 2  # 连续几天成交量正增长
 SELL_VOLUME_THRESHOLD = 200  # 连续天数中至少有一天成交量涨幅超过此值（%）
 
 

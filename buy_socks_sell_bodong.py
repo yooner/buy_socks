@@ -1,4 +1,4 @@
-"""
+﻿"""
 波动率策略 - 基于波动率变化的交易策略
 买入：条件A(波动率连续向0靠近)、条件B(波动率从负变正)、条件C(波动率>1连续天数)
 卖出：波动率降低至前一天97%以下
@@ -46,14 +46,14 @@ def get_output_file_path(base_name="out_put.txt"):
 SELL_RATIO_THRESHOLD = 0.999  # 波动率降至前一天97%以下全卖
 
 # 条件C全局开关
-ENABLE_CONDITION_C = True  # 设置为False可关闭条件C买入
+ENABLE_CONDITION_C = False  # 设置为False可关闭条件C买入
 
 # 买入条件全局参数
-BUY_DECLINE_DAYS_REQUIRED = 2  # 波动率连续向0靠近所需天数（条件A）
+BUY_DECLINE_DAYS_REQUIRED = 3  # 波动率连续向0靠近所需天数（条件A）
 
 # 条件C参数
-BUY_CONDITION_C_DAYS = 4       # 波动率>1的连续天数要求
-BUY_CONDITION_C_VOL_THRESHOLD = 0.85  # 波动率阈值（用于计数）
+BUY_CONDITION_C_DAYS = 5       # 波动率>1的连续天数要求
+BUY_CONDITION_C_VOL_THRESHOLD = 1  # 波动率阈值（用于计数）
 
 # 条件C分仓买入参数
 CONDITION_C_POSITION_THRESHOLD = 4  # 价ATR倍阈值，超过此值需要分仓买入（默认3）
@@ -62,23 +62,59 @@ CONDITION_C_FIRST_POSITION_RATIO = 1/3 # 第一次买入比例（1/3仓）
 CONDITION_C_SECOND_POSITION_RATIO = 1/3  # 第二次买入比例（1/3仓）
 
 # 延迟买入开关
-ENABLE_DELAYED_BUY = True  # 设置为True启用延迟买入模式）
+ENABLE_DELAYED_BUY = False  # 设置为True启用延迟买入模式）
 
 # 延迟卖出开关
-ENABLE_DELAYED_SELL = True  # 设置为True启用延迟卖出模式
+ENABLE_DELAYED_SELL = False  # 设置为True启用延迟卖出模式
 
 # C3分批卖出开关（条件C全仓后跌破20日高价时分批卖出）
-ENABLE_C3_PARTIAL_SELL = True  # 设置为True启用C3分批卖出机制
+ENABLE_C3_PARTIAL_SELL = False  # 设置为True启用C3分批卖出机制
 C3_PARTIAL_SELL_RATIO = 1/2  # 每次卖出1/4（可配置）
 C3_SELL_STAGES = 2  # 分4次卖完
 C_FULL_BUY_HIGH_20_THRESHOLD = 0.97  # 全仓买入C触发分批卖出的20日高价阈值（默认0.97，即满仓价格>=20日最高价*0.97时触发）
 
 # 持仓期间价格追踪止损开关
-ENABLE_STOP_LOSS = True  # 设置为True启用持仓期间价格追踪止损策略
+ENABLE_STOP_LOSS = False  # 设置为True启用持仓期间价格追踪止损策略
 STOP_LOSS_MA20_THRESHOLD = -7 # MA20阈值%，价格低于MA20但在阈值范围内不卖出（默认-5%，即低于MA20 5%以内不卖出）
 
 # 买入A五日最高条件开关
-ENABLE_BUY_A_5DAY_HIGH_CHECK = True  # 设置为True启用：买入A时如果收盘价是五日最高则延迟买入，等待价格回调后再上涨时买入
+ENABLE_BUY_A_5DAY_HIGH_CHECK = False  # 设置为True启用：买入A时如果收盘价是五日最高则延迟买入，等待价格回调后再上涨时买入
+
+# A策略卖出/回补挡位（相对A入场价）
+A_SELL_DROP_LEVEL = -0.05   # A卖出触发跌幅（例如 -5%）
+A_REBUY_DROP_LEVEL = -0.10  # A回补触发跌幅（例如 -10%）
+
+# A条件波幅变化卖出策略开关
+ENABLE_A_VOL_CHANGE_SELL = False  # 设置为True启用：波动率从负变正后，第二天开始监控波幅变化%，由负变正时卖出
+
+# 可买未买资金账户开关
+ENABLE_MISSED_BUY_FUND = False  # 设置为True启用：独立资金账户，在买入A与卖出区间内分批买入卖出
+
+# 主账户在卖出A与买入A之间的分批买入卖出开关
+ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING = True  # 设置为True启用：主账户在卖出A与买入A之间分批买入卖出
+
+# 可买未买资金分批买入配置（相对于主账户A买入价的跌幅）
+MISSED_BUY_LEVELS = [-0.04, -0.08, -0.13]  # 买入触发跌幅（-4%, -8%, -13%, -19%, -26%）
+MISSED_BUY_RATIOS = [0.20, 0.30, 0.50]      # 对应买入比例（20%, 30%, 50%）
+
+# 可买未买资金分批卖出配置（相对于买入成本的ATR倍数）
+MISSED_SELL_ATR_MULTIPLIERS = [1.0, 1.5, 2.0]  # 卖出触发ATR倍数（1.0, 1.5, 2.0）
+MISSED_SELL_RATIOS = [0.30, 0.30, 0.40]          # 对应卖出比例（30%, 30%, 40%）
+# 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
+MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
+# 主账户区间交易：上涨场景分批买入（参考outbreak的趋势确认思路）
+ENABLE_MAIN_ACCOUNT_UPTREND_BUY = False
+MAIN_ACCOUNT_UPTREND_LEVELS = [0.03, 0.06, 0.10]   # 相对锚定价上涨3%/6%/10%触发
+MAIN_ACCOUNT_UPTREND_RATIOS = [0.20, 0.30, 0.50]   # 对应分批投入比例
+MAIN_ACCOUNT_UPTREND_REQUIRE_MA20_UP = True         # 要求MA20较前一日上行
+# 追涨过滤（防止“只是上涨一点就追”）
+MAIN_ACCOUNT_UPTREND_BREAKOUT_LOOKBACK = 10         # 需突破最近N日收盘高点（不含当日）
+MAIN_ACCOUNT_UPTREND_BREAKOUT_BUFFER = 0.003        # 突破缓冲(0.3%)，过滤假突破
+MAIN_ACCOUNT_UPTREND_MIN_DAYS_AFTER_ANCHOR = 2      # 锚定日后至少等待N天再追涨
+MAIN_ACCOUNT_UPTREND_MAX_DISTANCE_TO_MA20 = 0.12    # 收盘价高于MA20超过该比例则不追（防过度追高）
+MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.2, 2.0, 3.0]
+MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.30, 0.30, 0.40]
+
 
 
 def calculate_slope_atr(df, ma_period=20, atr_period=14, n=5):
@@ -148,6 +184,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
     df['波动率百分比'] = ((df['波动率'] - df['prev_volatility']) / df['prev_volatility'].abs() * 100).replace([np.inf, -np.inf], np.nan)
     df.drop(columns=['prev_volatility'], inplace=True)
     
+    # 计算波幅变化百分比（后一天波幅相对前一天的变化百分比）
+    df['prev_波动率百分比'] = df['波动率百分比'].shift(1)
+    df['波幅变化%'] = ((df['波动率百分比'] - df['prev_波动率百分比']) / df['prev_波动率百分比'].abs() * 100).replace([np.inf, -np.inf], np.nan)
+    df.drop(columns=['prev_波动率百分比'], inplace=True)
+    
     # 计算MA20相对于收盘价的幅度百分比
     df['MA20幅度%'] = ((df['ma20'] - df['收盘']) / df['收盘'] * 100).replace([np.inf, -np.inf], np.nan)
 
@@ -169,11 +210,20 @@ def run_backtest(stock_code: str = STOCK_CODE):
     trades = []
     trade_count = 0
     
+    # 符合A买入条件的统计
+    total_condition_a_count = 0  # 所有符合A买入条件的次数（无论是否持仓）
+    actual_condition_a_buy_count = 0  # 实际执行A买入的次数
+    missed_buy_groups_count = 0  # 可买未买天数计数（每天单独计算）
+    
+    # 可买未买资金账户买入缓冲相关变量
+    consecutive_missed_days = 0  # 连续可买未买天数计数
+    
     # 买入条件计数器
     volatility_declining_days = 0  # 波动率连续向0靠近天数（数值变大）
     prev_volatility = None         # 前一天波动率
     volatility_above_one_days = 0  # 波动率在1以上的连续天数
     is_condition_c_trade = False   # 标记是否为条件C买入的交易
+    is_condition_a_trade = False   # 标记是否为A策略买入（用于A挡位卖出/回补）
     
     # 延迟买入状态变量
     pending_buy_price = 0          # 待买入价格（记录触发买入条件时的价格）
@@ -205,6 +255,73 @@ def run_backtest(stock_code: str = STOCK_CODE):
     c_full_buy_price = 0   # C条件满仓买入当天的价格
     c_full_buy_high_20 = 0 # C条件满仓买入当天的20日最高价
 
+    # A条件波幅变化卖出策略状态变量
+    a_vol_change_sell_active = False  # 是否激活波幅变化卖出监控（波动率从负变正后第二天开始）
+    prev_volatility_change_pct = None  # 前一天的波幅变化%
+
+    # 可买未买资金账户状态变量（独立运营）- 新策略：区间内分批买入卖出
+    if ENABLE_MISSED_BUY_FUND:
+        missed_buy_fund_initial = initial_capital  # 可买未买资金账户初始资金（每轮重新开始）
+        missed_buy_fund_cash = initial_capital  # 可买未买资金账户当前现金
+        missed_buy_fund_total_profit = 0  # 可买未买资金账户累计盈利（跨轮累计）
+        missed_buy_fund_position = 0           # 可买未买资金账户持仓
+        missed_buy_fund_buy_price = 0          # 可买未买资金账户加权平均买入价格
+        missed_buy_fund_trades = []            # 可买未买资金账户交易记录
+        missed_buy_fund_trade_count = 0        # 可买未买资金账户交易次数
+        last_anchor_price = 0
+        main_account_anchor_index = -1          # 锚定价格对应的索引（用于追涨等待天数）
+        missed_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)  # 记录各买入档位是否已触发
+        missed_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)  # 记录各卖出档位是否已触发
+        missed_fund_total_bought_shares = 0    # 记录本轮总买入股数（用于计算卖出比例）
+        main_account_has_position = False      # 主账户是否有持仓
+        is_between_sell_and_buy = False      # 是否在卖出与买入之间（True=卖出后，False=买入后）
+    else:
+        missed_buy_fund_initial = 0
+        missed_buy_fund_total_profit = 0
+        missed_buy_fund_cash = 0
+        missed_buy_fund_position = 0
+        missed_buy_fund_buy_price = 0
+        missed_buy_fund_trades = []
+        missed_buy_fund_trade_count = 0
+        last_anchor_price = 0
+        main_account_anchor_index = -1
+        missed_buy_levels_triggered = []
+        missed_sell_levels_triggered = []
+        missed_fund_total_bought_shares = 0
+        main_account_has_position = False
+        is_between_sell_and_buy = False
+    
+    # 主账户在卖出A与买入A之间的分批买入卖出状态变量
+    if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+        main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)  # 主账户卖出A与买入A之间的买入档位
+        main_account_sell_buy_position = 0  # 主账户在卖出A与买入A之间的持仓
+        main_account_sell_buy_price = 0  # 主账户在卖出A与买入A之间的加权平均买入价格
+        main_account_sell_buy_total_shares = 0  # 主账户在卖出A与买入A之间的总买入股数
+        main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)  # 主账户卖出A与买入A之间的卖出档位
+        main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)  # 主账户卖出A与买入A之间的上涨买入档位
+        main_account_drop_anchor_price = 0
+        main_account_rise_anchor_price = 0
+        main_account_rise_reentry_locked = False
+        main_account_had_rise_entry_in_cycle = False
+    else:
+        main_account_sell_buy_levels_triggered = []
+        main_account_sell_buy_position = 0
+        main_account_sell_buy_price = 0
+        main_account_sell_buy_total_shares = 0
+        main_account_sell_sell_levels_triggered = []
+        main_account_rise_buy_levels_triggered = []
+        main_account_drop_anchor_price = 0
+        main_account_rise_anchor_price = 0
+        main_account_rise_reentry_locked = False
+        main_account_had_rise_entry_in_cycle = False
+
+    # A策略回合状态（用于挡位卖出后等待回补）
+    a_cycle_entry_price = 0
+    a_cycle_sell_trigger_price = 0
+    a_cycle_rebuy_trigger_price = 0
+    a_cycle_last_sell_price = 0
+    a_cycle_waiting_rebuy = False
+
     # 收集所有输出内容
     output_lines = []
 
@@ -214,6 +331,32 @@ def run_backtest(stock_code: str = STOCK_CODE):
         print(line, **kwargs)
         output_lines.append(line)
 
+    def init_a_cycle(entry_price):
+        """初始化A策略当前回合：记录入场价并计算卖出/回补挡位"""
+        nonlocal a_cycle_entry_price, a_cycle_sell_trigger_price
+        nonlocal a_cycle_rebuy_trigger_price, a_cycle_last_sell_price, a_cycle_waiting_rebuy
+        a_cycle_entry_price = entry_price
+        a_cycle_sell_trigger_price = entry_price * (1 + A_SELL_DROP_LEVEL)
+        a_cycle_rebuy_trigger_price = entry_price * (1 + A_REBUY_DROP_LEVEL)
+        a_cycle_last_sell_price = 0
+        a_cycle_waiting_rebuy = False
+
+    def activate_a_rebuy_wait(sell_price):
+        """A挡位卖出后进入等待回补状态，记录本次卖出价"""
+        nonlocal a_cycle_last_sell_price, a_cycle_waiting_rebuy
+        a_cycle_last_sell_price = sell_price
+        a_cycle_waiting_rebuy = True
+
+    def reset_a_cycle():
+        """重置A策略回合状态"""
+        nonlocal a_cycle_entry_price, a_cycle_sell_trigger_price
+        nonlocal a_cycle_rebuy_trigger_price, a_cycle_last_sell_price, a_cycle_waiting_rebuy
+        a_cycle_entry_price = 0
+        a_cycle_sell_trigger_price = 0
+        a_cycle_rebuy_trigger_price = 0
+        a_cycle_last_sell_price = 0
+        a_cycle_waiting_rebuy = False
+
     # 打印表头
     log_print(f"\n{'='*175}")
     log_print(f"股票代码: {stock_code}")
@@ -222,15 +365,20 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"买入条件A: (连续向0靠近{BUY_DECLINE_DAYS_REQUIRED}天且波动率<0) - 全仓买入")
     log_print(f"买入条件C: (波动率>{BUY_CONDITION_C_VOL_THRESHOLD}连续第{BUY_CONDITION_C_DAYS}天) - 分仓买入(价ATR倍>{CONDITION_C_POSITION_THRESHOLD}或MA20幅%<{CONDITION_C_MA20_PCT_THRESHOLD}%时分3批)")
     stop_loss_str = "; 持仓价格追踪止损" if ENABLE_STOP_LOSS else ""
-    log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖；条件C买入需等>{BUY_CONDITION_C_VOL_THRESHOLD}天数归0才卖{stop_loss_str}")
+    vol_change_sell_str = "; A条件波幅变化卖出" if ENABLE_A_VOL_CHANGE_SELL else ""
+    log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖；条件C买入需等>{BUY_CONDITION_C_VOL_THRESHOLD}天数归0才卖{stop_loss_str}{vol_change_sell_str}")
     if ENABLE_C3_PARTIAL_SELL:
         log_print(f"C条件分批卖出: 全仓后跌破20日高价且满仓价>={int(C_FULL_BUY_HIGH_20_THRESHOLD*100)}%20日高时分{C3_SELL_STAGES}批卖出，每次卖出{int(C3_PARTIAL_SELL_RATIO*100)}%（最低优先级）")
     if ENABLE_STOP_LOSS:
         log_print(f"持仓止损: 买入后第二天收盘价<MA20时启动价格追踪，低于MA20 {abs(STOP_LOSS_MA20_THRESHOLD)}%才卖出，防止震荡")
         log_print(f"C条件价格追踪: 买入C后第二天价格<MA20时不启动价格追踪（仅A条件买入启动价格追踪）")
+    if ENABLE_A_VOL_CHANGE_SELL:
+        log_print(f"A条件波幅变化卖出: 波动率从负变正后，第二天开始监控波幅变化%，由负变正时卖出")
+    if ENABLE_MISSED_BUY_FUND:
+        log_print(f"可买未买资金账户: 独立资金{initial_capital:,.2f}，买入区间分批买入卖出，最终与主账户同时卖出")
     log_print(f"{'='*175}\n")
 
-    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'20日最高':>8} {'>1天数':>6} {'操作':<12} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'波幅变化%':>10} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'20日最高':>8} {'>1天数':>6} {'操作':<12} {'持仓':>8} {'市值':>12}"
     log_print(header)
     log_print("-" * 195)
     
@@ -244,8 +392,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
         ma20_pct = row['MA20幅度%']  # MA20相对于收盘价的幅度%
         volatility = row['波动率']
         volatility_pct = row['波动率百分比']  # 波幅%
+        volatility_change_pct = row['波幅变化%']  # 波幅变化百分比
         
         action = ""
+        a_sold_today = False
+        condition_a = False  # 初始化条件A标记
         
         # 确保数据有效
         if pd.notna(volatility):
@@ -360,18 +511,41 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         should_sell = True
                         sell_reason = "C条件"
                 elif position > 0 and not is_condition_c_trade:
+                    # A策略优先卖出：价格跌破A卖出挡位（如-5%）即卖出
+                    if is_condition_a_trade and a_cycle_sell_trigger_price > 0 and close_price <= a_cycle_sell_trigger_price:
+                        should_sell = True
+                        sell_reason = "A挡位卖出"
+
                     # 普通卖出条件1：波动率>0且降低，且降至前一天97%以下
-                    if volatility > 0 and is_volatility_declining:
+                    if not should_sell and volatility > 0 and is_volatility_declining:
                         volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
                         if volatility_ratio <= SELL_RATIO_THRESHOLD:
                             should_sell = True
                             sell_reason = "比率卖出"
+                    
+                    # A条件波幅变化卖出策略：波动率从负变正后，第二天开始监控波幅变化%，由负变正时卖出
+                    if ENABLE_A_VOL_CHANGE_SELL and not should_sell:
+                        # 检查波动率是否从负变正（当天为正，前一天为负）
+                        # 注意：当天检测到从负变正时，只是标记，第二天才开始真正监控
+                        if prev_volatility is not None and volatility > 0 and prev_volatility < 0:
+                            # 波动率从负变正，设置标记（第二天才开始监控）
+                            a_vol_change_sell_active = True
+                        
+                        # 如果监控已激活，且波动率已经是正数（说明已经过了从负变正的那一天）
+                        if a_vol_change_sell_active and volatility > 0 and prev_volatility_change_pct is not None:
+                            # 波幅变化%由负变正时触发卖出
+                            if volatility_change_pct > 0 and prev_volatility_change_pct < 0:
+                                # 波幅变化%由负变正，触发卖出
+                                should_sell = True
+                                sell_reason = "A波幅变化"
                     
             
             # 卖出逻辑（支持延迟卖出和立即止损）
             if position > 0:
                 # 止损卖出：立即执行，不进入待卖出状态
                 if is_stop_loss_triggered:
+                    was_condition_c_trade = is_condition_c_trade
+                    was_condition_a_trade = is_condition_a_trade
                     sell_price = close_price
                     sell_value = position * sell_price
                     profit = (sell_price - buy_price) * position
@@ -389,6 +563,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     position = 0
                     buy_price = 0
                     is_condition_c_trade = False
+                    is_condition_a_trade = False
                     # 重置计数器
                     volatility_declining_days = 0
                     volatility_above_one_days = 0  # 卖出后重置C条件天数
@@ -411,6 +586,47 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     hold_days = 0
                     # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                     price_trend_direction = None
+                    
+                    # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
+                    if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                        # 设置锚定价格为卖出价格
+                        last_anchor_price = sell_price
+                        main_account_drop_anchor_price = sell_price
+                        main_account_rise_anchor_price = sell_price
+                        main_account_rise_reentry_locked = False
+                        main_account_had_rise_entry_in_cycle = False
+                        # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
+                        main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                        main_account_sell_buy_position = 0
+                        main_account_sell_buy_price = 0
+                        main_account_sell_buy_total_shares = 0
+                        main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                        main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                    # 重置A条件波幅变化卖出策略状态
+                    a_vol_change_sell_active = False
+                    prev_volatility_change_pct = None
+                    if was_condition_a_trade and sell_reason == "A挡位卖出":
+                        activate_a_rebuy_wait(sell_price)
+                        a_sold_today = True
+                    else:
+                        reset_a_cycle()
+                    # 可买未买资金账户同步卖出
+                    if ENABLE_MISSED_BUY_FUND and missed_buy_fund_position > 0:
+                        missed_buy_fund_sell_value = missed_buy_fund_position * sell_price
+                        missed_buy_fund_profit = (sell_price - missed_buy_fund_buy_price) * missed_buy_fund_position
+                        missed_buy_fund_cash += missed_buy_fund_sell_value
+                        missed_buy_fund_trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '卖出',
+                            'price': sell_price,
+                            'shares': missed_buy_fund_position,
+                            'profit': missed_buy_fund_profit
+                        })
+                        missed_buy_fund_position = 0
+                        missed_buy_fund_buy_price = 0
+                        last_main_buy_price = 0
+                        missed_fund_total_bought_shares = 0  # 重置总买入股数
                 
                 # 检查是否有待执行的延迟卖出（价格追踪止损不进入此逻辑）
                 elif is_pending_sell and ENABLE_DELAYED_SELL:
@@ -420,6 +636,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         action = f"更新卖价@{pending_sell_price:.2f}"
                     # 如果收盘价低于待卖出价，执行卖出
                     elif close_price <= pending_sell_price:
+                        was_condition_c_trade = is_condition_c_trade
+                        was_condition_a_trade = is_condition_a_trade
                         sell_price = close_price
                         sell_value = position * sell_price
                         profit = (sell_price - buy_price) * position
@@ -437,6 +655,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         position = 0
                         buy_price = 0
                         is_condition_c_trade = False
+                        is_condition_a_trade = False
                         # 重置计数器
                         volatility_declining_days = 0
                         volatility_above_one_days = 0  # 卖出后重置C条件天数
@@ -458,7 +677,31 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         hold_days = 0
                         # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                         price_trend_direction = None
-
+                        # 重置A条件波幅变化卖出策略状态
+                        a_vol_change_sell_active = False
+                        prev_volatility_change_pct = None
+                        if was_condition_a_trade and sell_reason == "A挡位卖出":
+                            activate_a_rebuy_wait(sell_price)
+                            a_sold_today = True
+                        else:
+                            reset_a_cycle()
+                        
+                        # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
+                        if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                            # 设置锚定价格为卖出价格
+                            last_anchor_price = sell_price
+                            main_account_anchor_index = i
+                            main_account_drop_anchor_price = sell_price
+                            main_account_rise_anchor_price = sell_price
+                            main_account_rise_reentry_locked = False
+                            main_account_had_rise_entry_in_cycle = False
+                            # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
+                            main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                            main_account_sell_buy_position = 0
+                            main_account_sell_buy_price = 0
+                            main_account_sell_buy_total_shares = 0
+                            main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                            main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                         # 非止损卖出，同步清空虚拟仓
                         virtual_position = 0
                 
@@ -467,7 +710,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     # C条件卖出立即执行，不受延迟卖出开关影响（最高优先级）
                     # 普通卖出（比率卖出）受延迟卖出开关控制
                     is_condition_c_sell = (sell_reason == "C条件")
-                    if ENABLE_DELAYED_SELL and not is_pending_sell and not is_condition_c_sell:
+                    is_condition_a_sell = (sell_reason == "A挡位卖出")
+                    if ENABLE_DELAYED_SELL and not is_pending_sell and not is_condition_c_sell and not is_condition_a_sell:
                         # 延迟卖出模式：记录卖出点但不真正卖出（仅对普通卖出生效）
                         is_pending_sell = True
                         pending_sell_price = close_price
@@ -491,7 +735,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         
                         position = 0
                         buy_price = 0
+                        was_condition_a_trade = is_condition_a_trade
                         is_condition_c_trade = False
+                        is_condition_a_trade = False
                         # 卖出后重置计数器
                         volatility_declining_days = 0
                         volatility_above_one_days = 0  # 卖出后重置C条件天数
@@ -514,9 +760,61 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         hold_days = 0
                         # 注意：不重置highest_price_since_buy和lowest_price_since_buy，保持价格追踪状态
                         price_trend_direction = None
+                        if was_condition_a_trade and sell_reason == "A挡位卖出":
+                            activate_a_rebuy_wait(sell_price)
+                            a_sold_today = True
+                        else:
+                            reset_a_cycle()
 
                         # 非止损卖出，同步清空虚拟仓
                         virtual_position = 0
+                        
+                        # 可买未买资金账户处理：主账户卖出时
+                        if ENABLE_MISSED_BUY_FUND:
+                            # 无论是否有持仓，都设置锚定价格为卖出价格，并标记为卖出与买入之间
+                            last_anchor_price = sell_price
+                            main_account_anchor_index = i
+                            main_account_drop_anchor_price = sell_price
+                            main_account_rise_anchor_price = sell_price
+                            main_account_rise_reentry_locked = False
+                            main_account_had_rise_entry_in_cycle = False
+                            main_account_has_position = False
+                            is_between_sell_and_buy = True
+                        
+                        # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
+                        if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                            # 设置锚定价格为卖出价格
+                            last_anchor_price = sell_price
+                            main_account_anchor_index = i
+                            main_account_drop_anchor_price = sell_price
+                            main_account_rise_anchor_price = sell_price
+                            main_account_rise_reentry_locked = False
+                            main_account_had_rise_entry_in_cycle = False
+                            # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
+                            main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                            main_account_sell_buy_position = 0
+                            main_account_sell_buy_price = 0
+                            main_account_sell_buy_total_shares = 0
+                            main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                            main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                        # 如果有持仓则同步清空
+                        if ENABLE_MISSED_BUY_FUND and missed_buy_fund_position > 0:
+                                missed_buy_fund_sell_value = missed_buy_fund_position * sell_price
+                                missed_buy_fund_profit = (sell_price - missed_buy_fund_buy_price) * missed_buy_fund_position
+                                missed_buy_fund_cash += missed_buy_fund_sell_value
+                                missed_buy_fund_trades.append({
+                                    'day': day_num,
+                                    'date': date_str,
+                                    'action': '卖出',
+                                    'price': sell_price,
+                                    'shares': missed_buy_fund_position,
+                                    'profit': missed_buy_fund_profit
+                                })
+                                missed_buy_fund_position = 0
+                                missed_buy_fund_buy_price = 0
+                                missed_fund_total_bought_shares = 0
+                                missed_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                                missed_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
                 
                 # C条件分批卖出逻辑（优先级高于C条件卖出，但低于止损和延迟卖出）
                 # 当C条件分批卖出触发时，优先执行分批卖出而不是C条件卖出
@@ -565,6 +863,24 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             highest_price_since_buy = 0
                             lowest_price_since_buy = 0
                             virtual_position = 0
+                            
+                            # 可买未买资金账户同步卖出（C条件分批卖出全部完成时）
+                            if ENABLE_MISSED_BUY_FUND and missed_buy_fund_position > 0:
+                                missed_buy_fund_sell_value = missed_buy_fund_position * sell_price
+                                missed_buy_fund_profit = (sell_price - missed_buy_fund_buy_price) * missed_buy_fund_position
+                                missed_buy_fund_cash += missed_buy_fund_sell_value
+                                missed_buy_fund_trades.append({
+                                    'day': day_num,
+                                    'date': date_str,
+                                    'action': '卖出',
+                                    'price': sell_price,
+                                    'shares': missed_buy_fund_position,
+                                    'profit': missed_buy_fund_profit
+                                })
+                                missed_buy_fund_position = 0
+                                missed_buy_fund_buy_price = 0
+                                last_main_buy_price = 0
+                                missed_fund_total_bought_shares = 0  # 重置总买入股数
             
             # 虚拟仓独立运行原卖出逻辑（不触发止损，使用实际仓的状态）
             if ENABLE_STOP_LOSS and virtual_position > 0 and position == 0:
@@ -600,6 +916,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
             # 更新前一天的波动率
             prev_volatility = volatility
+            
+            # 更新前一天的波幅变化%（用于A条件波幅变化卖出策略）
+            if pd.notna(volatility_change_pct):
+                prev_volatility_change_pct = volatility_change_pct
 
             # 买入条件判断
             # 条件：波动率为负，连续向0靠近（数值变大）
@@ -611,6 +931,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
             # 条件A：连续向0靠近指定天数，且当天波动率<0（负值区间）
             condition_a = (volatility_declining_days >= BUY_DECLINE_DAYS_REQUIRED and
                            volatility < 0)
+            
+            # 统计所有符合A买入条件的次数
+            if condition_a:
+                total_condition_a_count += 1
             
             # 条件C：波动率>阈值连续指定天数（仅在开关打开时启用）
             condition_c = ENABLE_CONDITION_C and volatility_above_one_days >= BUY_CONDITION_C_DAYS
@@ -704,8 +1028,46 @@ def run_backtest(stock_code: str = STOCK_CODE):
             
             # 买入逻辑（只有在没有持仓时才买入）
             if position == 0:
+                a_rebuy_blocking = False
+                # A策略卖出后的回补优先级最高：先看回补挡位，再看是否突破卖出价
+                if a_cycle_waiting_rebuy:
+                    should_rebuy_by_drop = (not a_sold_today) and a_cycle_rebuy_trigger_price > 0 and close_price <= a_cycle_rebuy_trigger_price
+                    should_rebuy_by_breakout = (not a_sold_today) and a_cycle_last_sell_price > 0 and close_price > a_cycle_last_sell_price
+                    if should_rebuy_by_drop or should_rebuy_by_breakout:
+                        buy_price = close_price
+                        new_position = int(cash / buy_price)
+                        if new_position > 0:
+                            position = new_position
+                            cost = position * buy_price
+                            cash -= cost
+                            trade_count += 1
+                            is_condition_c_trade = False
+                            is_condition_a_trade = True
+                            action_suffix = "回补挡位" if should_rebuy_by_drop else "破卖价回补"
+                            action = f"回补A@{buy_price:.2f}({action_suffix})"
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '买入',
+                                'price': buy_price,
+                                'shares': position,
+                                'is_condition_c': False
+                            })
+                            init_a_cycle(buy_price)
+                            volatility_declining_days = 0
+                            hold_days = 0
+                            highest_price_since_buy = 0
+                            lowest_price_since_buy = 0
+                            price_trend_direction = None
+                            virtual_position = position
+                    else:
+                        a_rebuy_blocking = True
+                        action = f"等待A回补@{close_price:.2f}"
+
                 # 检查是否有待执行的延迟买入
-                if is_pending_buy:
+                if a_rebuy_blocking:
+                    pass
+                elif is_pending_buy:
                     # 判断是五日最高延迟买入还是价格追踪期间延迟买入
                     is_5day_high_pending = "五日最高" in pending_buy_condition
                     
@@ -737,7 +1099,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 cost = position * buy_price
                                 cash -= cost
                                 trade_count += 1
+                                # 如果是五日最高延迟买入成功执行，计入A买入次数
+                                if is_5day_high_pending:
+                                    actual_condition_a_buy_count += 1
                                 is_condition_c_trade = False
+                                is_condition_a_trade = is_5day_high_pending
                                 if is_from_low_to_high:
                                     action = f"买入A@{buy_price:.2f}(低转高,续涨)"
                                 elif is_5day_high_pending:
@@ -765,6 +1131,15 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 price_trend_direction = None
                                 # 同步更新虚拟仓
                                 virtual_position = position
+                                if is_condition_a_trade:
+                                    init_a_cycle(buy_price)
+                                if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                                    main_account_drop_anchor_price = 0
+                                    main_account_rise_anchor_price = 0
+                                    main_account_rise_reentry_locked = False
+                                    main_account_had_rise_entry_in_cycle = False
+                                else:
+                                    reset_a_cycle()
                     else:
                         # 价格没有继续上涨，更新待买入价格（取更低的价格）
                         if close_price < pending_buy_price:
@@ -803,6 +1178,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 cash -= cost
                                 trade_count += 1
                                 is_condition_c_trade = True
+                                is_condition_a_trade = False
                                 condition_c_position_stage = 1
                                 condition_c_prev_price = buy_price
                                 condition_c_prev_ma20_pct = ma20_pct  # 记录初始MA20幅%
@@ -824,6 +1200,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 cash -= cost
                                 trade_count += 1
                                 is_condition_c_trade = True
+                                is_condition_a_trade = False
                                 condition_c_position_stage = 3  # 标记为已全仓
                                 # 记录C条件满仓买入当天的价格和20日最高价（用于分批卖出条件判断）
                                 c_full_buy_price = buy_price
@@ -846,6 +1223,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             price_trend_direction = None
                             # 同步更新虚拟仓（完全镜像）
                             virtual_position = position
+                            reset_a_cycle()
 
                     # 条件A买入（全仓）- 主逻辑立即买入，不延迟
                     elif condition_a:
@@ -866,11 +1244,62 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             buy_price = close_price
                             new_position = int(cash / buy_price)
                             if new_position > 0:
+                                # 如果未买资金还有持仓（上一轮未触发卖出），先全部卖出
+                                if ENABLE_MISSED_BUY_FUND and missed_buy_fund_position > 0:
+                                    # 先卖出持仓（按当前价格）
+                                    sell_value = missed_buy_fund_position * buy_price
+                                    sell_profit = (buy_price - missed_buy_fund_buy_price) * missed_buy_fund_position
+                                    missed_buy_fund_cash += sell_value
+                                    missed_buy_fund_trades.append({
+                                        'day': day_num,
+                                        'date': date_str,
+                                        'action': '卖出',
+                                        'price': buy_price,
+                                        'shares': missed_buy_fund_position,
+                                        'profit': sell_profit
+                                    })
+                                    # 重置持仓，现金保留
+                                    missed_buy_fund_position = 0
+                                    missed_buy_fund_buy_price = 0
+                                    missed_fund_total_bought_shares = 0
+                                    missed_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                                    missed_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                                
+                                # 如果主账户在卖出A与买入A之间还有持仓，先全部卖出
+                                if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_sell_buy_position > 0:
+                                    # 先卖出持仓（按当前价格）
+                                    sell_value = main_account_sell_buy_position * buy_price
+                                    sell_profit = (buy_price - main_account_sell_buy_price) * main_account_sell_buy_position
+                                    cash += sell_value
+                                    trades.append({
+                                        'day': day_num,
+                                        'date': date_str,
+                                        'action': '卖出',
+                                        'price': buy_price,
+                                        'shares': main_account_sell_buy_position,
+                                        'profit': sell_profit
+                                    })
+                                    trade_count += 1
+                                    # 记录卖出操作
+                                    if action == "":
+                                        action = f"主账户卖出A与买入A之间持仓{main_account_sell_buy_position}股@{buy_price:.2f}"
+                                    # 重置持仓
+                                    main_account_sell_buy_position = 0
+                                    main_account_sell_buy_price = 0
+                                    main_account_sell_buy_total_shares = 0
+                                    main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                                    main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                                    main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                                    # 重新计算可买入股数
+                                    new_position = int(cash / buy_price)
+                                
                                 position = new_position
                                 cost = position * buy_price
                                 cash -= cost
                                 trade_count += 1
+                                actual_condition_a_buy_count += 1  # 实际执行A买入的次数
                                 is_condition_c_trade = False
+                                is_condition_a_trade = True
                                 action = f"买入A@{buy_price:.2f}"
                                 trades.append({
                                     'day': day_num,
@@ -880,6 +1309,15 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                     'shares': position,
                                     'is_condition_c': False
                                 })
+                                # 记录锚定价格（用于可买未买资金账户）
+                                if ENABLE_MISSED_BUY_FUND:
+                                    last_anchor_price = buy_price
+                                    main_account_has_position = True
+                                    is_between_sell_and_buy = False  # 标记为买入与卖出之间
+                                    # 重置买入档位触发记录（新的一次A买入周期开始）
+                                    missed_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                                    missed_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                                    missed_fund_total_bought_shares = 0  # 重置总买入股数
                                 volatility_declining_days = 0
                                 # 初始化持仓期间价格追踪变量
                                 hold_days = 0
@@ -888,26 +1326,296 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 price_trend_direction = None
                                 # 同步更新虚拟仓（完全镜像）
                                 virtual_position = position
+                                init_a_cycle(buy_price)
         
-        # 计算当前市值
-        market_value = cash + position * close_price if position > 0 else cash
-        position_str = f"{position}" if position > 0 else "0"
+        # 新策略：可买未买资金在买入A与卖出区间内分批买入卖出
+        if ENABLE_MISSED_BUY_FUND and last_anchor_price > 0:
+            # 根据状态决定锚定价格
+            # 卖出与买入之间（is_between_sell_and_buy=True）：使用卖出价格作为锚定，主账户可以无持仓
+            # 买入与卖出之间（is_between_sell_and_buy=False）：使用买入A价格作为锚定，需要主账户有持仓
+            if is_between_sell_and_buy:
+                anchor_price = last_anchor_price
+                allow_buy = False  # 卖出与买入之间，可买未买资金不买入（由主账户操作）
+            else:
+                anchor_price = last_anchor_price
+                allow_buy = position > 0 and main_account_has_position  # 买入与卖出之间需要主账户有持仓
+            
+            if not allow_buy:
+                anchor_price = 0  # 不允许买入时重置锚定价格
+            
+            # 计算当前价格相对于锚定价格的跌幅
+            price_drop_pct = (close_price - anchor_price) / anchor_price if anchor_price > 0 else 0
+            
+            # 分批买入逻辑 - 所有满足条件的档位都触发
+            triggered_buy_levels = []
+            for i, (level, ratio) in enumerate(zip(MISSED_BUY_LEVELS, MISSED_BUY_RATIOS)):
+                if not missed_buy_levels_triggered[i] and price_drop_pct <= level:
+                    triggered_buy_levels.append(i)
+            
+            # 如果有满足条件的档位，执行买入
+            for i in triggered_buy_levels:
+                ratio = MISSED_BUY_RATIOS[i]
+                buy_amount = initial_capital * ratio  # 使用固定初始资金的比例
+                new_position = int(buy_amount / close_price)
+                if new_position > 0 and missed_buy_fund_cash >= new_position * close_price:
+                    cost = new_position * close_price
+                    missed_buy_fund_cash -= cost
+                    # 更新加权平均买入价格
+                    if missed_buy_fund_position == 0:
+                        missed_buy_fund_buy_price = close_price
+                    else:
+                        missed_buy_fund_buy_price = (missed_buy_fund_buy_price * missed_buy_fund_position + close_price * new_position) / (missed_buy_fund_position + new_position)
+                    missed_buy_fund_position += new_position
+                    missed_fund_total_bought_shares += new_position  # 记录总买入股数
+                    missed_buy_fund_trade_count += 1
+                    missed_buy_fund_trades.append({
+                        'day': day_num,
+                        'date': date_str,
+                        'action': '买入',
+                        'price': close_price,
+                        'shares': new_position,
+                        'level': i + 1
+                    })
+                    missed_buy_levels_triggered[i] = True
+            
+            # 显示触发的所有档位
+            if triggered_buy_levels:
+                triggered_levels_str = ','.join([f"买{i+1}" for i in triggered_buy_levels])
+                action = f"未买资金{triggered_levels_str}@{close_price:.2f} 持仓{missed_buy_fund_position}"
+            
+            # 分批卖出逻辑（基于ATR倍数）- 所有满足条件的档位都触发（全部卖出）
+            if missed_buy_fund_position > 0 and missed_buy_fund_buy_price > 0:
+                # 获取当前ATR值
+                current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
+                if current_atr > 0:
+                    # 计算当前价格相对于买入价格的涨幅（以ATR为单位）
+                    price_atr_multiplier = (close_price - missed_buy_fund_buy_price) / current_atr
+                    
+                    # 检查是否满足任何卖出档位
+                    max_triggered_level = -1
+                    for i in range(len(MISSED_SELL_ATR_MULTIPLIERS) - 1, -1, -1):
+                        if price_atr_multiplier >= MISSED_SELL_ATR_MULTIPLIERS[i]:
+                            max_triggered_level = i
+                            break
+                    
+                    # 如果满足任何档位，全部卖出
+                    if max_triggered_level >= 0:
+                        # 计算总卖出比例（所有满足条件的档位比例之和）
+                        total_ratio = sum(MISSED_SELL_RATIOS[:max_triggered_level + 1])
+                        # 基于当前持仓计算卖出股数
+                        sell_shares = int(missed_buy_fund_position * total_ratio)
+                        # 确保不超过当前持仓
+                        sell_shares = min(sell_shares, missed_buy_fund_position)
+                        if sell_shares > 0:
+                            sell_value = sell_shares * close_price
+                            profit = (close_price - missed_buy_fund_buy_price) * sell_shares
+                            missed_buy_fund_cash += sell_value
+                            missed_buy_fund_position -= sell_shares
+                            missed_buy_fund_trade_count += 1
+                            missed_buy_fund_trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '卖出',
+                                'price': close_price,
+                                'shares': sell_shares,
+                                'profit': profit,
+                                'level': max_triggered_level + 1
+                            })
+                            # 显示触发的所有档位和剩余持仓
+                            triggered_levels = ','.join([f"卖{i+1}" for i in range(max_triggered_level + 1)])
+                            remaining_position = missed_buy_fund_position  # 卖出后的剩余持仓
+                            action = f"未卖资金{triggered_levels}@{close_price:.2f} 持仓{remaining_position}"
+                            # 如果持仓为0，重置买入价格
+                            if missed_buy_fund_position == 0:
+                                missed_buy_fund_buy_price = 0
         
-        # 数据显示
+        # 主账户在卖出A与买入A之间的分批买入卖出逻辑
+        if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and position == 0 and (main_account_drop_anchor_price > 0 or main_account_rise_anchor_price > 0):
+            drop_anchor_price = main_account_drop_anchor_price if main_account_drop_anchor_price > 0 else last_anchor_price
+            rise_anchor_price = main_account_rise_anchor_price if main_account_rise_anchor_price > 0 else last_anchor_price
+            price_drop_pct = (close_price - drop_anchor_price) / drop_anchor_price if drop_anchor_price > 0 else 0
+
+            if ENABLE_MAIN_ACCOUNT_UPTREND_BUY and (not main_account_rise_reentry_locked) and rise_anchor_price > 0:
+                prev_ma20 = df.iloc[i-1]['ma20'] if i > 0 and pd.notna(df.iloc[i-1]['ma20']) else ma20
+                prev2_ma20 = df.iloc[i-2]['ma20'] if i > 1 and pd.notna(df.iloc[i-2]['ma20']) else prev_ma20
+                ma20_up_strong = pd.notna(ma20) and pd.notna(prev_ma20) and pd.notna(prev2_ma20) and (ma20 > prev_ma20 > prev2_ma20)
+                ma20_trend_ok = ma20_up_strong if MAIN_ACCOUNT_UPTREND_REQUIRE_MA20_UP else True
+                days_since_anchor = (i - main_account_anchor_index) if main_account_anchor_index >= 0 else 9999
+                anchor_wait_ok = days_since_anchor >= MAIN_ACCOUNT_UPTREND_MIN_DAYS_AFTER_ANCHOR
+                lookback_start = max(0, i - MAIN_ACCOUNT_UPTREND_BREAKOUT_LOOKBACK)
+                recent_close_high = df.iloc[lookback_start:i]['收盘'].max() if i > lookback_start else close_price
+                breakout_ok = pd.notna(recent_close_high) and close_price >= recent_close_high * (1 + MAIN_ACCOUNT_UPTREND_BREAKOUT_BUFFER)
+                distance_to_ma20 = ((close_price - ma20) / ma20) if pd.notna(ma20) and ma20 > 0 else 0
+                not_too_far_from_ma20 = distance_to_ma20 <= MAIN_ACCOUNT_UPTREND_MAX_DISTANCE_TO_MA20
+                allow_uptrend_buy = (
+                    pd.notna(ma20)
+                    and close_price > ma20
+                    and ma20_trend_ok
+                    and anchor_wait_ok
+                    and breakout_ok
+                    and not_too_far_from_ma20
+                )
+                if allow_uptrend_buy:
+                    rise_pct = (close_price - rise_anchor_price) / rise_anchor_price if rise_anchor_price > 0 else 0
+                    triggered_rise_levels = []
+                    executed_rise_levels = []
+                    for rise_idx, (rise_level, rise_ratio) in enumerate(zip(MAIN_ACCOUNT_UPTREND_LEVELS, MAIN_ACCOUNT_UPTREND_RATIOS)):
+                        if not main_account_rise_buy_levels_triggered[rise_idx] and rise_pct >= rise_level:
+                            triggered_rise_levels.append((rise_idx, rise_ratio))
+
+                    for rise_idx, rise_ratio in triggered_rise_levels:
+                        buy_amount = initial_capital * rise_ratio
+                        new_position = int(buy_amount / close_price)
+                        if new_position > 0 and cash >= new_position * close_price:
+                            cost = new_position * close_price
+                            cash -= cost
+                            if main_account_sell_buy_position == 0:
+                                main_account_sell_buy_price = close_price
+                            else:
+                                main_account_sell_buy_price = (main_account_sell_buy_price * main_account_sell_buy_position + close_price * new_position) / (main_account_sell_buy_position + new_position)
+                            main_account_sell_buy_position += new_position
+                            main_account_sell_buy_total_shares += new_position
+                            trade_count += 1
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '买入',
+                                'price': close_price,
+                                'shares': new_position,
+                                'level': rise_idx + 1
+                            })
+                            main_account_rise_buy_levels_triggered[rise_idx] = True
+                            main_account_had_rise_entry_in_cycle = True
+                            executed_rise_levels.append(rise_idx)
+
+                    if executed_rise_levels:
+                        rise_levels_str = ','.join([f"\u8ffd\u6da8\u4e70{idx+1}" for idx in executed_rise_levels])
+                        action = f"\u4e3b\u8d26\u6237{rise_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
+            if close_price < ma20 and drop_anchor_price > 0:
+                executed_drop_levels = []
+                for drop_idx, level in enumerate(MISSED_BUY_LEVELS):
+                    if main_account_sell_buy_levels_triggered[drop_idx]:
+                        continue
+                    if price_drop_pct > level:
+                        continue
+
+                    ratio = MISSED_BUY_RATIOS[drop_idx]
+                    buy_amount = initial_capital * ratio
+                    new_position = int(buy_amount / close_price)
+                    if new_position <= 0 or cash < new_position * close_price:
+                        continue
+
+                    cost = new_position * close_price
+                    cash -= cost
+                    if main_account_sell_buy_position == 0:
+                        main_account_sell_buy_price = close_price
+                    else:
+                        main_account_sell_buy_price = (
+                            main_account_sell_buy_price * main_account_sell_buy_position
+                            + close_price * new_position
+                        ) / (main_account_sell_buy_position + new_position)
+
+                    main_account_sell_buy_position += new_position
+                    main_account_sell_buy_total_shares += new_position
+                    trade_count += 1
+                    trades.append({
+                        'day': day_num,
+                        'date': date_str,
+                        'action': '\u4e70\u5165',
+                        'price': close_price,
+                        'shares': new_position,
+                        'level': drop_idx + 1
+                    })
+                    main_account_sell_buy_levels_triggered[drop_idx] = True
+                    executed_drop_levels.append(drop_idx)
+
+                if executed_drop_levels:
+                    drop_levels_str = ','.join([f"\u4e70{idx + 1}" for idx in executed_drop_levels])
+                    action = f"\u4e3b\u8d26\u6237{drop_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
+
+            if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0:
+                current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
+                if current_atr > 0:
+                    price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr
+
+                    if main_account_had_rise_entry_in_cycle:
+                        sell_atr_levels = MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS
+                        sell_ratios = MAIN_ACCOUNT_UPTREND_SELL_RATIOS
+                    else:
+                        sell_atr_levels = MISSED_SELL_ATR_MULTIPLIERS
+                        sell_ratios = MISSED_SELL_RATIOS
+
+                    max_triggered_level = -1
+                    for sell_idx in range(len(sell_atr_levels) - 1, -1, -1):
+                        if price_atr_multiplier >= sell_atr_levels[sell_idx]:
+                            max_triggered_level = sell_idx
+                            break
+
+                    if max_triggered_level >= 0:
+                        total_ratio = sum(sell_ratios[:max_triggered_level + 1])
+                        sell_shares = int(main_account_sell_buy_position * total_ratio)
+                        sell_shares = min(sell_shares, main_account_sell_buy_position)
+                        remaining_after_sell = main_account_sell_buy_position - sell_shares
+                        if remaining_after_sell <= MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR:
+                            sell_shares = main_account_sell_buy_position
+                        if sell_shares > 0:
+                            sell_value = sell_shares * close_price
+                            profit = (close_price - main_account_sell_buy_price) * sell_shares
+                            cash += sell_value
+                            main_account_sell_buy_position -= sell_shares
+                            trade_count += 1
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '卖出',
+                                'price': close_price,
+                                'shares': sell_shares,
+                                'profit': profit,
+                                'level': max_triggered_level + 1
+                            })
+                            triggered_levels = ','.join([f"卖{i+1}" for i in range(max_triggered_level + 1)])
+                            remaining_position = main_account_sell_buy_position
+                            action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f} \u6301\u4ed3{remaining_position}"
+                            if main_account_sell_buy_position == 0:
+                                main_account_sell_buy_price = 0
+                                main_account_sell_buy_total_shares = 0
+                                main_account_sell_buy_levels_triggered = [False] * len(MISSED_BUY_LEVELS)
+                                main_account_sell_sell_levels_triggered = [False] * len(MISSED_SELL_ATR_MULTIPLIERS)
+                                main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                                if main_account_had_rise_entry_in_cycle:
+                                    main_account_rise_reentry_locked = True
+                                main_account_had_rise_entry_in_cycle = False
+
+        display_position = position
+        if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+            display_position += main_account_sell_buy_position
+        market_value = cash + display_position * close_price if display_position > 0 else cash
+        position_str = f"{display_position}" if display_position > 0 else "0"
+        
+        # 数据显示（所有情况都显示，包括可买未买）
         ma20_str = f"{ma20:.2f}" if pd.notna(ma20) else "N/A"
         ma20_pct_str = f"{ma20_pct:.2f}" if pd.notna(ma20_pct) else "N/A"
         atr14_str = f"{row['atr14']:.2f}" if pd.notna(row['atr14']) else "N/A"
         volatility_str = f"{volatility:.2f}" if pd.notna(volatility) else "N/A"
         volatility_pct_str = f"{row['波动率百分比']:.1f}" if pd.notna(row['波动率百分比']) else "N/A"
+        volatility_change_pct_str = f"{row['波幅变化%']:.1f}" if pd.notna(row['波幅变化%']) else "N/A"
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
         high_5day_str = f"{row['5日最高']:.2f}" if pd.notna(row['5日最高']) else "N/A"
         low_5day_str = f"{row['5日最低']:.2f}" if pd.notna(row['5日最低']) else "N/A"
         high_20day_str = f"{row['20日最高']:.2f}" if pd.notna(row['20日最高']) else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {high_20day_str:>8} {volatility_above_one_days:>6} {action:<12} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {volatility_change_pct_str:>10} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {high_20day_str:>8} {volatility_above_one_days:>6} {action:<12} {position_str:>8} {market_value:>12,.2f}")
     
-    # 计算最终收益
-    final_value = cash + position * df.iloc[-1]['收盘'] if position > 0 else cash
+    # 回测结束，如果有未处理的可买未买缓冲（回测在可买未买期间结束），不买入
+    # 因为可买未买资金需要在连续可买未买结束后的第一天买入
+    if consecutive_missed_days > 0:
+        pass  # 回测在可买未买期间结束，不执行买入
+    
+    # 计算最终收益（主仓 + 主账户区间仓位）
+    final_position = position
+    if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+        final_position += main_account_sell_buy_position
+    final_value = cash + final_position * df.iloc[-1]['收盘'] if final_position > 0 else cash
     final_profit = final_value - initial_capital
     
     # 统计条件C交易数据
@@ -936,10 +1644,40 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"最终资金: {final_value:,.2f}")
     log_print(f"总盈利: {final_profit:,.2f}")
     log_print(f"收益率: {(final_profit/initial_capital)*100:.2f}%")
+    log_print(f"\n条件A买入统计:")
+    log_print(f"  符合A买入条件次数: {total_condition_a_count}")
+    log_print(f"  实际执行A买入次数: {actual_condition_a_buy_count}")
+    log_print(f"  可买未买组数(连续算一组): {missed_buy_groups_count}")
+    if total_condition_a_count > 0:
+        log_print(f"  因持仓错过天数: {missed_buy_groups_count} ({missed_buy_groups_count/total_condition_a_count*100:.1f}%)")
     log_print(f"\n条件C交易统计:")
     log_print(f"  买入次数: {condition_c_count}")
     log_print(f"  亏损次数: {condition_c_loss_count}")
     log_print(f"  总盈利: {condition_c_total_profit:,.2f}")
+    
+    # 可买未买资金账户统计
+    if ENABLE_MISSED_BUY_FUND:
+        # 当前轮次的最终价值 = 现金 + 持仓 × 当前股价
+        missed_buy_fund_final_value = missed_buy_fund_cash + missed_buy_fund_position * df.iloc[-1]['收盘'] if missed_buy_fund_position > 0 else missed_buy_fund_cash
+        # 累计总盈利 = 最终资金 - 初始资金
+        missed_buy_fund_total_profit = missed_buy_fund_final_value - initial_capital
+        log_print(f"\n【可买未买资金账户统计】(独立运营)")
+        log_print(f"  起始资金: {initial_capital:,.2f}")
+        log_print(f"  最终资金: {missed_buy_fund_final_value:,.2f}")
+        log_print(f"  总盈利: {missed_buy_fund_total_profit:,.2f}")
+        log_print(f"  收益率: {(missed_buy_fund_total_profit/initial_capital)*100:.2f}%")
+        log_print(f"  交易次数: {missed_buy_fund_trade_count}")
+        if missed_buy_fund_position > 0:
+            log_print(f"  当前持仓: {missed_buy_fund_position}股 (买入均价: {missed_buy_fund_buy_price:.2f})")
+        
+        if missed_buy_fund_trades:
+            log_print(f"\n  可买未买资金账户交易明细:")
+            log_print(f"  {'序号':<6} {'日期':<12} {'操作':<6} {'价格':>10} {'股数':>10} {'盈亏':>12}")
+            log_print(f"  {'-' * 70}")
+            for idx, trade in enumerate(missed_buy_fund_trades, 1):
+                profit_str = f"{trade.get('profit', 0):,.2f}" if 'profit' in trade else "-"
+                level_str = f"(档位{trade.get('level', '-')})" if trade.get('level') else ""
+                log_print(f"  {idx:<6} {trade['date']:<12} {trade['action']:<6} {trade['price']:>10.2f} {trade['shares']:>10} {profit_str:>12} {level_str}")
 
     if trades:
         log_print(f"\n交易明细:")
@@ -1094,8 +1832,13 @@ def run_backtest(stock_code: str = STOCK_CODE):
             log_print(f"\n  根据当前条件，暂时无法预测明确的卖出触发价格")
         
         log_print(f"{'='*175}")
+    # 写入文件前做中文动作文本校验，避免乱码占位符混入输出
+    invalid_action_tokens = ['??', '主账户?']
+    for trade in trades:
+        trade_action = trade.get('action', '')
+        if any(token in trade_action for token in invalid_action_tokens):
+            raise ValueError(f"检测到异常动作文本: {trade_action}")
 
-    # 写入文件
     output_file = get_output_file_path()
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -1124,3 +1867,41 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
 if __name__ == "__main__":
     run_backtest()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

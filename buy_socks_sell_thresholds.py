@@ -12,8 +12,8 @@ from ana_stocks import (
 
 INITIAL_CAPITAL = 100000
 
-buy_levels = [-0.04, -0.08, -0.13, -0.19, -0.26]
-buy_ratios = [0.10, 0.15, 0.20, 0.25, 0.30]
+buy_levels = [-0.04, -0.08, -0.13]
+buy_ratios = [0.20, 0.30, 0.50]
 
 sell_atr_multipliers = [1.0, 1.5, 2.0]
 sell_ratios = [0.30, 0.30, 0.40]
