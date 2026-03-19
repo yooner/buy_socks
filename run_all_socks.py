@@ -329,6 +329,7 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
         print(f"\n已加载历史数据，共 {len(previous_df)} 条记录")
 
     results = []
+    holding_stocks = []  # 收集持仓股票信息
 
     for i, stock_code in enumerate(stocks, 1):
         total_return, yearly_returns, extra_data = run_backtest_for_stock(strategy_key, stock_code)
@@ -342,10 +343,36 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
             'yearly_returns': yearly_returns
         }
         results.append(result)
+        
+        # 收集持仓信息
+        if extra_data and 'holding_info' in extra_data and extra_data['holding_info']:
+            holding_info = extra_data['holding_info']
+            holding_stocks.append({
+                'stock_code': stock_code,
+                'position': holding_info['position'],
+                'cost_price': holding_info['cost_price'],
+                'current_price': holding_info['current_price'],
+                'price_change_pct': holding_info['price_change_pct'],
+                'start_date': holding_info.get('start_date', 'N/A'),
+                'holding_days': holding_info.get('holding_days', 0)
+            })
 
     if not results:
         print(f"\n没有有效的回测结果")
         return
+    
+    # 打印持仓股票信息（仅对波动策略）
+    if strategy_key == 'bodong' and holding_stocks:
+        print(f"\n{'='*110}")
+        print("持仓股票信息")
+        print(f"{'='*110}")
+        print(f"{'股票代码':<12} {'持仓数量':>10} {'持仓价格':>12} {'最新价格':>12} {'涨跌幅':>10} {'开始日期':>12} {'持仓天数':>10}")
+        print("-"*110)
+        for h in holding_stocks:
+            start_date_str = str(h['start_date'])[:10] if h['start_date'] else 'N/A'
+            print(f"{h['stock_code']:<12} {h['position']:>10} {h['cost_price']:>12.2f} {h['current_price']:>12.2f} {h['price_change_pct']:>+9.2f}% {start_date_str:>12} {h['holding_days']:>10}天")
+        print(f"{'='*110}")
+        print(f"总计: {len(holding_stocks)} 只股票处于持仓状态")
 
     if enable_git_tag:
         _, enable_update = check_and_create_git_tag(results, previous_df, strategy_key)

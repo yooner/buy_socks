@@ -56,23 +56,41 @@ MAIN_ACCOUNT_BUY_LEVELS = [-0.04, -0.08, -0.13]  # 买入触发跌幅（-4%, -8%
 MAIN_ACCOUNT_BUY_RATIOS = [0.20, 0.30, 0.50]      # 对应买入比例（20%, 30%, 50%）
 
 # 主账户区间交易分批卖出配置（相对于买入成本的ATR倍数）
-MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS = [1.0, 1.5, 2.0]  # 卖出触发ATR倍数（1.0, 1.5, 2.0）
-MAIN_ACCOUNT_SELL_RATIOS = [0.30, 0.30, 0.40]          # 对应卖出比例（30%, 30%, 40%）
+MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0]  # 卖出触发ATR倍数（1.0, 1.5, 2.0）
+MAIN_ACCOUNT_SELL_RATIOS = [0.30, 0.30, 0.25, 0.15]          # 对应卖出比例（30%, 30%, 40%）
 
 # 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
 MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
 # 主账户区间交易：上涨场景分批买入（参考outbreak的趋势确认思路）
-ENABLE_MAIN_ACCOUNT_UPTREND_BUY = False
+ENABLE_MAIN_ACCOUNT_UPTREND_BUY = True
 MAIN_ACCOUNT_UPTREND_LEVELS = [0.03, 0.06, 0.10]   # 相对锚定价上涨3%/6%/10%触发
-MAIN_ACCOUNT_UPTREND_RATIOS = [0.20, 0.30, 0.50]   # 对应分批投入比例
-MAIN_ACCOUNT_UPTREND_REQUIRE_MA20_UP = True         # 要求MA20较前一日上行
+MAIN_ACCOUNT_UPTREND_RATIOS = [0.40, 0.40, 0.20]   # 对应分批投入比例
+MAIN_ACCOUNT_UPTREND_REQUIRE_MA20_UP = False         # 要求MA20较前一日上行
 # 追涨过滤（防止“只是上涨一点就追”）
 MAIN_ACCOUNT_UPTREND_BREAKOUT_LOOKBACK = 10         # 需突破最近N日收盘高点（不含当日）
 MAIN_ACCOUNT_UPTREND_BREAKOUT_BUFFER = 0.003        # 突破缓冲(0.3%)，过滤假突破
-MAIN_ACCOUNT_UPTREND_MIN_DAYS_AFTER_ANCHOR = 2      # 锚定日后至少等待N天再追涨
-MAIN_ACCOUNT_UPTREND_MAX_DISTANCE_TO_MA20 = 0.12    # 收盘价高于MA20超过该比例则不追（防过度追高）
-MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.2, 2.0, 3.0]
-MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.30, 0.30, 0.40]
+MAIN_ACCOUNT_UPTREND_MIN_DAYS_AFTER_ANCHOR = 3      # 锚定日后至少等待N天再追涨
+MAIN_ACCOUNT_UPTREND_MAX_DISTANCE_TO_MA20 = 0.50    # 收盘价高于MA20超过该比例则不追（防过度追高）
+MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.1, 2.0, 3.0, 3.8, 4.8]
+MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.30, 0.30, 0.10, 0.15, 0.15]
+
+# 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
+MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
+
+# 追跌买入止损阈值：当追跌买入的三档都买入后，跌幅超过该阈值时直接卖出
+MAIN_ACCOUNT_DROP_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
+MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = True  # 是否需要三档都买入后才触发止损
+
+# 买入A与卖出A之间的止盈机制
+ENABLE_MAIN_ACCOUNT_TAKE_PROFIT = True  # 是否启用止盈机制
+MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.10, 0.20, 0.30]  # 止盈档位（涨幅10%/20%/30%触发）
+MAIN_ACCOUNT_TAKE_PROFIT_RATIOS = [0.10, 0.20, 0.30]  # 对应卖出仓位比例（卖出10%/20%/30%）
+
+# 买入A与卖出A之间的止损机制
+ENABLE_MAIN_ACCOUNT_STOP_LOSS = True  # 是否启用止损机制
+MAIN_ACCOUNT_STOP_LOSS_LEVELS = [-0.05, -0.10, -0.15]  # 止损档位（跌幅5%/10%/15%触发）
+MAIN_ACCOUNT_STOP_LOSS_RATIOS = [0.20, 0.30, 0.50]  # 对应卖出仓位比例（卖出20%/30%/50%）
+MAIN_ACCOUNT_STOP_LOSS_REBUY_LEVELS = [-0.10, -0.15, -0.20]  # 再买入档位（跌幅10%/15%/20%买回）
 
 
 
@@ -177,6 +195,16 @@ def run_backtest(stock_code: str = STOCK_CODE):
     volatility_declining_days = 0  # 波动率连续向0靠近天数（数值变大）
     prev_volatility = None         # 前一天波动率
     
+    # 持仓开始日期（用于计算持仓天数）
+    holding_start_date = None
+    
+    # 买入A与卖出A之间的止盈机制状态变量
+    take_profit_levels_triggered = [False] * len(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_TAKE_PROFIT else []
+    
+    # 买入A与卖出A之间的止损机制状态变量
+    stop_loss_levels_triggered = [False] * len(MAIN_ACCOUNT_STOP_LOSS_LEVELS) if ENABLE_MAIN_ACCOUNT_STOP_LOSS else []
+    stop_loss_rebuy_levels_triggered = [False] * len(MAIN_ACCOUNT_STOP_LOSS_REBUY_LEVELS) if ENABLE_MAIN_ACCOUNT_STOP_LOSS else []
+    
     # 主账户在卖出A与买入A之间的分批买入卖出状态变量
     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
         main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)  # 主账户卖出A与买入A之间的买入档位
@@ -191,6 +219,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_had_rise_entry_in_cycle = False
         last_anchor_price = 0
         main_account_anchor_index = -1
+        # 追涨和追跌分别维护独立的加权平均买入价格
+        main_account_rise_buy_price = 0  # 追涨买入的加权平均价格
+        main_account_drop_buy_price = 0  # 追跌买入的加权平均价格
     else:
         main_account_sell_buy_levels_triggered = []
         main_account_sell_buy_position = 0
@@ -204,6 +235,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_had_rise_entry_in_cycle = False
         last_anchor_price = 0
         main_account_anchor_index = -1
+        main_account_rise_buy_price = 0
+        main_account_drop_buy_price = 0
 
     # 收集所有输出内容
     output_lines = []
@@ -223,9 +256,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖")
     log_print(f"{'='*175}\n")
 
-    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'MA20幅%':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'波幅变化%':>10} {'价ATR倍':>8} {'5日最高':>8} {'5日最低':>8} {'20日最高':>8} {'操作':<12} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'操作':<30} {'持仓':>8} {'市值':>12}"
     log_print(header)
-    log_print("-" * 195)
+    log_print("-" * 140)
     
     # 遍历每一天进行回测
     for i in range(len(df)):
@@ -261,6 +294,17 @@ def run_backtest(stock_code: str = STOCK_CODE):
             should_sell = False
             sell_reason = ""
             
+            # 检查止盈（买入A与卖出A之间）
+            take_profit_triggered = False
+            take_profit_level = -1
+            if position > 0 and ENABLE_MAIN_ACCOUNT_TAKE_PROFIT and buy_price > 0:
+                profit_pct = (close_price - buy_price) / buy_price
+                for tp_idx, tp_level in enumerate(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS):
+                    if not take_profit_levels_triggered[tp_idx] and profit_pct >= tp_level:
+                        take_profit_triggered = True
+                        take_profit_level = tp_idx
+                        break
+            
             if position > 0:
                 # 卖出条件：波动率>0且降低，且降至前一天97%以下
                 if volatility > 0 and is_volatility_declining:
@@ -291,6 +335,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     buy_price = 0
                     # 卖出后重置计数器
                     volatility_declining_days = 0
+                    # 重置持仓开始日期
+                    holding_start_date = None
+                    # 重置止盈档位
+                    if ENABLE_MAIN_ACCOUNT_TAKE_PROFIT:
+                        take_profit_levels_triggered = [False] * len(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS)
                     
                     # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
                     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -308,6 +357,31 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_sell_buy_total_shares = 0
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                         main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                elif take_profit_triggered and take_profit_level >= 0:
+                    # 止盈卖出：部分卖出
+                    tp_ratio = MAIN_ACCOUNT_TAKE_PROFIT_RATIOS[take_profit_level]
+                    sell_shares = int(position * tp_ratio)
+                    sell_shares = min(sell_shares, position)
+                    sell_shares = max(sell_shares, 0)
+                    
+                    if sell_shares > 0:
+                        sell_price = close_price
+                        sell_value = sell_shares * sell_price
+                        profit = (sell_price - buy_price) * sell_shares
+                        cash += sell_value
+                        position -= sell_shares
+                        trade_count += 1
+                        trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '卖出',
+                            'price': sell_price,
+                            'shares': sell_shares,
+                            'profit': profit
+                        })
+                        action = f"止盈{take_profit_level + 1}@{sell_price:.2f} 持仓{position}"
+                        # 标记该止盈档位已触发
+                        take_profit_levels_triggered[take_profit_level] = True
             
             # 更新前一天的波动率
             prev_volatility = volatility
@@ -376,12 +450,18 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             'shares': position
                         })
                         volatility_declining_days = 0
+                        # 记录持仓开始日期
+                        if holding_start_date is None:
+                            holding_start_date = date_str
         
         # 主账户在卖出A与买入A之间的分批买入卖出逻辑
         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and position == 0 and (main_account_drop_anchor_price > 0 or main_account_rise_anchor_price > 0):
             drop_anchor_price = main_account_drop_anchor_price if main_account_drop_anchor_price > 0 else last_anchor_price
             rise_anchor_price = main_account_rise_anchor_price if main_account_rise_anchor_price > 0 else last_anchor_price
             price_drop_pct = (close_price - drop_anchor_price) / drop_anchor_price if drop_anchor_price > 0 else 0
+            
+            # 标记当天是否有买入操作
+            has_buy_today = False
 
             if ENABLE_MAIN_ACCOUNT_UPTREND_BUY and (not main_account_rise_reentry_locked) and rise_anchor_price > 0:
                 prev_ma20 = df.iloc[i-1]['ma20'] if i > 0 and pd.notna(df.iloc[i-1]['ma20']) else ma20
@@ -417,10 +497,23 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         if new_position > 0 and cash >= new_position * close_price:
                             cost = new_position * close_price
                             cash -= cost
+                            # 更新总持仓的加权平均价格
                             if main_account_sell_buy_position == 0:
                                 main_account_sell_buy_price = close_price
                             else:
                                 main_account_sell_buy_price = (main_account_sell_buy_price * main_account_sell_buy_position + close_price * new_position) / (main_account_sell_buy_position + new_position)
+                            # 更新追涨买入的独立加权平均价格
+                            if main_account_rise_buy_price == 0:
+                                main_account_rise_buy_price = close_price
+                            else:
+                                # 计算追涨买入的总股数
+                                rise_total_shares = sum([
+                                    int(initial_capital * MAIN_ACCOUNT_UPTREND_RATIOS[j] / close_price)
+                                    for j in range(len(MAIN_ACCOUNT_UPTREND_LEVELS))
+                                    if main_account_rise_buy_levels_triggered[j] or j == rise_idx
+                                ])
+                                if rise_total_shares > 0:
+                                    main_account_rise_buy_price = (main_account_rise_buy_price * (rise_total_shares - new_position) + close_price * new_position) / rise_total_shares
                             main_account_sell_buy_position += new_position
                             main_account_sell_buy_total_shares += new_position
                             trade_count += 1
@@ -435,11 +528,15 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_rise_buy_levels_triggered[rise_idx] = True
                             main_account_had_rise_entry_in_cycle = True
                             executed_rise_levels.append(rise_idx)
+                            # 记录持仓开始日期（区间交易首次买入）
+                            if holding_start_date is None:
+                                holding_start_date = date_str
 
                     if executed_rise_levels:
                         rise_levels_str = ','.join([f"\u8ffd\u6da8\u4e70{idx+1}" for idx in executed_rise_levels])
                         action = f"\u4e3b\u8d26\u6237{rise_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
-            if close_price < ma20 and drop_anchor_price > 0:
+                        has_buy_today = True
+            if close_price < ma20 and drop_anchor_price > 0 and not has_buy_today:
                 executed_drop_levels = []
                 for drop_idx, level in enumerate(MAIN_ACCOUNT_BUY_LEVELS):
                     if main_account_sell_buy_levels_triggered[drop_idx]:
@@ -455,6 +552,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
                     cost = new_position * close_price
                     cash -= cost
+                    # 更新总持仓的加权平均价格
                     if main_account_sell_buy_position == 0:
                         main_account_sell_buy_price = close_price
                     else:
@@ -462,6 +560,18 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_sell_buy_price * main_account_sell_buy_position
                             + close_price * new_position
                         ) / (main_account_sell_buy_position + new_position)
+                    # 更新追跌买入的独立加权平均价格
+                    if main_account_drop_buy_price == 0:
+                        main_account_drop_buy_price = close_price
+                    else:
+                        # 计算追跌买入的总股数
+                        drop_total_shares = sum([
+                            int(initial_capital * MAIN_ACCOUNT_BUY_RATIOS[j] / close_price)
+                            for j in range(len(MAIN_ACCOUNT_BUY_LEVELS))
+                            if main_account_sell_buy_levels_triggered[j] or j == drop_idx
+                        ])
+                        if drop_total_shares > 0:
+                            main_account_drop_buy_price = (main_account_drop_buy_price * (drop_total_shares - new_position) + close_price * new_position) / drop_total_shares
 
                     main_account_sell_buy_position += new_position
                     main_account_sell_buy_total_shares += new_position
@@ -469,22 +579,51 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     trades.append({
                         'day': day_num,
                         'date': date_str,
-                        'action': '\u4e70\u5165',
+                        'action': '买入',
                         'price': close_price,
                         'shares': new_position,
                         'level': drop_idx + 1
                     })
                     main_account_sell_buy_levels_triggered[drop_idx] = True
                     executed_drop_levels.append(drop_idx)
+                    # 记录持仓开始日期（区间交易首次买入）
+                    if holding_start_date is None:
+                        holding_start_date = date_str
 
                 if executed_drop_levels:
                     drop_levels_str = ','.join([f"\u4e70{idx + 1}" for idx in executed_drop_levels])
                     action = f"\u4e3b\u8d26\u6237{drop_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
+                    has_buy_today = True
 
-            if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0:
+            # 只有当当天没有买入操作时，才执行卖出
+            if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0 and not has_buy_today:
+                # 计算当前持仓的盈亏百分比（使用总持仓的平均价格）
+                position_profit_pct = (close_price - main_account_sell_buy_price) / main_account_sell_buy_price
+                
+                # 检查是否触发止损（追涨或追跌）
+                stop_loss_triggered = False
+                stop_loss_type = None  # 'rise' 或 'drop'
+                
+                # 检查追涨止损
+                if main_account_had_rise_entry_in_cycle and main_account_rise_buy_price > 0:
+                    rise_profit_pct = (close_price - main_account_rise_buy_price) / main_account_rise_buy_price
+                    if rise_profit_pct <= MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT:
+                        stop_loss_triggered = True
+                        stop_loss_type = 'rise'
+                
+                # 检查追跌止损（需要三档都买入后才触发）
+                if not stop_loss_triggered and main_account_drop_buy_price > 0:
+                    # 检查是否所有追跌档位都已触发
+                    all_drop_levels_triggered = all(main_account_sell_buy_levels_triggered)
+                    if all_drop_levels_triggered or not MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS:
+                        drop_profit_pct = (close_price - main_account_drop_buy_price) / main_account_drop_buy_price
+                        if drop_profit_pct <= MAIN_ACCOUNT_DROP_STOP_LOSS_PCT:
+                            stop_loss_triggered = True
+                            stop_loss_type = 'drop'
+                
                 current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
-                if current_atr > 0:
-                    price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr
+                if current_atr > 0 or stop_loss_triggered:
+                    price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr if current_atr > 0 else 0
 
                     if main_account_had_rise_entry_in_cycle:
                         sell_atr_levels = MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS
@@ -498,41 +637,97 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         if price_atr_multiplier >= sell_atr_levels[sell_idx]:
                             max_triggered_level = sell_idx
                             break
-
-                    if max_triggered_level >= 0:
+                    
+                    # 如果触发止损，根据类型卖出相应部分
+                    if stop_loss_triggered:
+                        if stop_loss_type == 'rise':
+                            # 计算追涨买入的总股数
+                            rise_total_shares = sum([
+                                int(initial_capital * MAIN_ACCOUNT_UPTREND_RATIOS[j] / main_account_rise_buy_price)
+                                for j in range(len(MAIN_ACCOUNT_UPTREND_LEVELS))
+                                if main_account_rise_buy_levels_triggered[j]
+                            ]) if main_account_rise_buy_price > 0 else 0
+                            sell_shares = min(rise_total_shares, main_account_sell_buy_position)
+                            sell_shares = max(sell_shares, 0)  # 确保不为负数
+                        elif stop_loss_type == 'drop':
+                            # 追跌止损：卖出追跌买入的全部仓位
+                            drop_total_shares = sum([
+                                int(initial_capital * MAIN_ACCOUNT_BUY_RATIOS[j] / main_account_drop_buy_price)
+                                for j in range(len(MAIN_ACCOUNT_BUY_LEVELS))
+                                if main_account_sell_buy_levels_triggered[j]
+                            ]) if main_account_drop_buy_price > 0 else 0
+                            sell_shares = min(drop_total_shares, main_account_sell_buy_position)
+                            sell_shares = max(sell_shares, 0)  # 确保不为负数
+                        else:
+                            sell_shares = 0
+                    elif max_triggered_level >= 0:
                         total_ratio = sum(sell_ratios[:max_triggered_level + 1])
                         sell_shares = int(main_account_sell_buy_position * total_ratio)
                         sell_shares = min(sell_shares, main_account_sell_buy_position)
+                    else:
+                        sell_shares = 0
+                    
+                    if sell_shares > 0:
                         remaining_after_sell = main_account_sell_buy_position - sell_shares
                         if remaining_after_sell <= MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR:
                             sell_shares = main_account_sell_buy_position
-                        if sell_shares > 0:
-                            sell_value = sell_shares * close_price
-                            profit = (close_price - main_account_sell_buy_price) * sell_shares
-                            cash += sell_value
-                            main_account_sell_buy_position -= sell_shares
-                            trade_count += 1
-                            trades.append({
-                                'day': day_num,
-                                'date': date_str,
-                                'action': '卖出',
-                                'price': close_price,
-                                'shares': sell_shares,
-                                'profit': profit,
-                                'level': max_triggered_level + 1
-                            })
-                            triggered_levels = ','.join([f"卖{i+1}" for i in range(max_triggered_level + 1)])
-                            remaining_position = main_account_sell_buy_position
-                            action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f} \u6301\u4ed3{remaining_position}"
-                            if main_account_sell_buy_position == 0:
-                                main_account_sell_buy_price = 0
-                                main_account_sell_buy_total_shares = 0
-                                main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                                main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
+                        sell_value = sell_shares * close_price
+                        profit = (close_price - main_account_sell_buy_price) * sell_shares
+                        cash += sell_value
+                        main_account_sell_buy_position -= sell_shares
+                        trade_count += 1
+                        trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '卖出',
+                            'price': close_price,
+                            'shares': sell_shares,
+                            'profit': profit,
+                            'level': max_triggered_level + 1 if not stop_loss_triggered else 0
+                        })
+                        if stop_loss_triggered:
+                            if stop_loss_type == 'rise':
+                                triggered_levels = "止损(追涨)"
+                            elif stop_loss_type == 'drop':
+                                triggered_levels = "止损(追跌)"
+                            else:
+                                triggered_levels = "止损"
+                        else:
+                            # 区分追跌卖出和追涨卖出
+                            sell_source = "追涨" if main_account_had_rise_entry_in_cycle else "追跌"
+                            triggered_levels = ','.join([f"{sell_source}卖{i+1}" for i in range(max_triggered_level + 1)])
+                        remaining_position = main_account_sell_buy_position
+                        action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f} \u6301\u4ed3{remaining_position}"
+                        # 卖出后重置买入档位，允许在更低价格继续追跌买入
+                        main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                        if main_account_sell_buy_position == 0:
+                            main_account_sell_buy_price = 0
+                            main_account_sell_buy_total_shares = 0
+                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
+                            main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                            # 重置独立的追涨和追跌买入价格
+                            main_account_rise_buy_price = 0
+                            main_account_drop_buy_price = 0
+                            if main_account_had_rise_entry_in_cycle:
+                                main_account_rise_reentry_locked = True
+                            main_account_had_rise_entry_in_cycle = False
+                            # 重置持仓开始日期（区间交易完全清仓）
+                            holding_start_date = None
+                        else:
+                            # 如果还有剩余仓位，根据止损类型重置相应状态
+                            if stop_loss_type == 'rise':
+                                # 重置追涨相关状态
                                 main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                                main_account_rise_buy_price = 0
                                 if main_account_had_rise_entry_in_cycle:
                                     main_account_rise_reentry_locked = True
                                 main_account_had_rise_entry_in_cycle = False
+                            elif stop_loss_type == 'drop':
+                                # 重置追跌相关状态，并将锚定价格更新为卖出价格
+                                main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                                main_account_drop_buy_price = 0
+                                main_account_drop_anchor_price = close_price  # 更新追跌锚定价格为卖出价格
 
         display_position = position
         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -542,17 +737,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
         
         # 数据显示（所有情况都显示，包括可买未买）
         ma20_str = f"{ma20:.2f}" if pd.notna(ma20) else "N/A"
-        ma20_pct_str = f"{ma20_pct:.2f}" if pd.notna(ma20_pct) else "N/A"
         atr14_str = f"{row['atr14']:.2f}" if pd.notna(row['atr14']) else "N/A"
         volatility_str = f"{volatility:.2f}" if pd.notna(volatility) else "N/A"
         volatility_pct_str = f"{row['波动率百分比']:.1f}" if pd.notna(row['波动率百分比']) else "N/A"
-        volatility_change_pct_str = f"{row['波幅变化%']:.1f}" if pd.notna(row['波幅变化%']) else "N/A"
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
-        high_5day_str = f"{row['5日最高']:.2f}" if pd.notna(row['5日最高']) else "N/A"
-        low_5day_str = f"{row['5日最低']:.2f}" if pd.notna(row['5日最低']) else "N/A"
-        high_20day_str = f"{row['20日最高']:.2f}" if pd.notna(row['20日最高']) else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {ma20_pct_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {volatility_change_pct_str:>10} {price_atr_ratio_str:>8} {high_5day_str:>8} {low_5day_str:>8} {high_20day_str:>8} {action:<12} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {action:<30} {position_str:>8} {market_value:>12,.2f}")
     
     # 计算最终收益（主仓 + 主账户区间仓位）
     final_position = position
@@ -560,6 +750,42 @@ def run_backtest(stock_code: str = STOCK_CODE):
         final_position += main_account_sell_buy_position
     final_value = cash + final_position * df.iloc[-1]['收盘'] if final_position > 0 else cash
     final_profit = final_value - initial_capital
+    
+    # 收集持仓信息
+    holding_info = None
+    if final_position > 0:
+        last_close = df.iloc[-1]['收盘']
+        last_date = df.iloc[-1]['date']
+        # 计算持仓成本
+        if position > 0 and buy_price > 0:
+            # 有主仓持仓
+            holding_cost = buy_price
+        elif ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_sell_buy_position > 0:
+            # 只有区间交易持仓
+            holding_cost = main_account_sell_buy_price
+        else:
+            holding_cost = 0
+        
+        if holding_cost > 0:
+            price_change_pct = (last_close - holding_cost) / holding_cost * 100
+            # 计算持仓天数
+            holding_days = 0
+            if holding_start_date:
+                from datetime import datetime
+                # 处理日期字符串，只取日期部分
+                start_str = str(holding_start_date)[:10]
+                end_str = str(last_date)[:10]
+                start_dt = datetime.strptime(start_str, '%Y-%m-%d')
+                end_dt = datetime.strptime(end_str, '%Y-%m-%d')
+                holding_days = (end_dt - start_dt).days
+            holding_info = {
+                'position': final_position,
+                'cost_price': holding_cost,
+                'current_price': last_close,
+                'price_change_pct': price_change_pct,
+                'start_date': holding_start_date,
+                'holding_days': holding_days
+            }
     
     log_print(f"\n{'='*175}")
     log_print(f"回测结果统计")
@@ -693,7 +919,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
     for year in yearly_returns:
         yearly_returns[year] = (yearly_returns[year] / initial_capital) * 100
     
-    return total_return, yearly_returns, {'trades': trades, 'final_value': final_value}
+    return total_return, yearly_returns, {'trades': trades, 'final_value': final_value, 'holding_info': holding_info}
 
 
 if __name__ == "__main__":
