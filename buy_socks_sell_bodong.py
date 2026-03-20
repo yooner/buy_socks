@@ -71,8 +71,10 @@ MAIN_ACCOUNT_UPTREND_BREAKOUT_LOOKBACK = 10         # 需突破最近N日收盘�
 MAIN_ACCOUNT_UPTREND_BREAKOUT_BUFFER = 0.003        # 突破缓冲(0.3%)，过滤假突破
 MAIN_ACCOUNT_UPTREND_MIN_DAYS_AFTER_ANCHOR = 3      # 锚定日后至少等待N天再追涨
 MAIN_ACCOUNT_UPTREND_MAX_DISTANCE_TO_MA20 = 0.50    # 收盘价高于MA20超过该比例则不追（防过度追高）
-MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.1, 2.0, 3.0, 3.8, 4.8]
-MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.30, 0.30, 0.10, 0.15, 0.15]
+MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.1, 2.0, 3.0, 3.8]
+MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.40, 0.35, 0.25, 0.10]
+ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT = True
+MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS = [0.10, 0.20, 0.40, 0.70]
 
 # 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
@@ -83,8 +85,8 @@ MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = True  # 是否需要三档都�
 
 # 买入A与卖出A之间的止盈机制
 ENABLE_MAIN_ACCOUNT_TAKE_PROFIT = True  # 是否启用止盈机制
-MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.10, 0.20, 0.30]  # 止盈档位（涨幅10%/20%/30%触发）
-MAIN_ACCOUNT_TAKE_PROFIT_RATIOS = [0.10, 0.20, 0.30]  # 对应卖出仓位比例（卖出10%/20%/30%）
+MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.15, 0.20, 0.30]  # 止盈档位（涨幅10%/20%/30%触发）
+MAIN_ACCOUNT_TAKE_PROFIT_RATIOS = [0.20, 0.20, 0.30]  # 对应卖出仓位比例（卖出10%/20%/30%）
 
 # 买入A与卖出A之间的止损机制
 ENABLE_MAIN_ACCOUNT_STOP_LOSS = True  # 是否启用止损机制
@@ -212,6 +214,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_sell_buy_price = 0  # 主账户在卖出A与买入A之间的加权平均买入价格
         main_account_sell_buy_total_shares = 0  # 主账户在卖出A与买入A之间的总买入股数
         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)  # 主账户卖出A与买入A之间的卖出档位
+        main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
         main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)  # 主账户卖出A与买入A之间的上涨买入档位
         main_account_drop_anchor_price = 0
         main_account_rise_anchor_price = 0
@@ -228,6 +231,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_sell_buy_price = 0
         main_account_sell_buy_total_shares = 0
         main_account_sell_sell_levels_triggered = []
+        main_account_uptrend_sell_levels_triggered = []
         main_account_rise_buy_levels_triggered = []
         main_account_drop_anchor_price = 0
         main_account_rise_anchor_price = 0
@@ -356,6 +360,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_sell_buy_price = 0
                         main_account_sell_buy_total_shares = 0
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
+                        main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                         main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                 elif take_profit_triggered and take_profit_level >= 0:
                     # 止盈卖出：部分卖出
@@ -432,6 +437,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_sell_buy_total_shares = 0
                             main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
+                            main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                             main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                             # 重新计算可买入股数
                             new_position = int(cash / buy_price)
@@ -622,51 +628,85 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             stop_loss_type = 'drop'
                 
                 current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
-                if current_atr > 0 or stop_loss_triggered:
+                rise_profit_for_sell = (
+                    (close_price - main_account_rise_buy_price) / main_account_rise_buy_price
+                    if main_account_rise_buy_price > 0 else 0
+                )
+                use_uptrend_profit_sell = (
+                    main_account_had_rise_entry_in_cycle
+                    and ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT
+                    and main_account_rise_buy_price > 0
+                )
+
+                can_evaluate_sell = stop_loss_triggered or use_uptrend_profit_sell or current_atr > 0
+                if can_evaluate_sell:
                     price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr if current_atr > 0 else 0
 
                     if main_account_had_rise_entry_in_cycle:
-                        sell_atr_levels = MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS
+                        if use_uptrend_profit_sell:
+                            sell_levels = MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS
+                            sell_trigger_value = rise_profit_for_sell
+                        else:
+                            sell_levels = MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS
+                            sell_trigger_value = price_atr_multiplier
                         sell_ratios = MAIN_ACCOUNT_UPTREND_SELL_RATIOS
                     else:
-                        sell_atr_levels = MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS
+                        sell_levels = MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS
+                        sell_trigger_value = price_atr_multiplier
                         sell_ratios = MAIN_ACCOUNT_SELL_RATIOS
 
                     max_triggered_level = -1
-                    for sell_idx in range(len(sell_atr_levels) - 1, -1, -1):
-                        if price_atr_multiplier >= sell_atr_levels[sell_idx]:
+                    newly_triggered_levels = []
+                    for sell_idx in range(len(sell_levels) - 1, -1, -1):
+                        if sell_trigger_value >= sell_levels[sell_idx]:
                             max_triggered_level = sell_idx
                             break
                     
-                    # 如果触发止损，根据类型卖出相应部分
+                    if (not stop_loss_triggered) and main_account_had_rise_entry_in_cycle and max_triggered_level >= 0:
+                        trigger_cap = min(max_triggered_level + 1, len(main_account_uptrend_sell_levels_triggered))
+                        for idx in range(trigger_cap):
+                            if not main_account_uptrend_sell_levels_triggered[idx]:
+                                main_account_uptrend_sell_levels_triggered[idx] = True
+                                newly_triggered_levels.append(idx)
+                    
+                    trade_level = 0
+                    # ?????????????????
                     if stop_loss_triggered:
                         if stop_loss_type == 'rise':
-                            # 计算追涨买入的总股数
+                            # ??????????
                             rise_total_shares = sum([
                                 int(initial_capital * MAIN_ACCOUNT_UPTREND_RATIOS[j] / main_account_rise_buy_price)
                                 for j in range(len(MAIN_ACCOUNT_UPTREND_LEVELS))
                                 if main_account_rise_buy_levels_triggered[j]
                             ]) if main_account_rise_buy_price > 0 else 0
                             sell_shares = min(rise_total_shares, main_account_sell_buy_position)
-                            sell_shares = max(sell_shares, 0)  # 确保不为负数
+                            sell_shares = max(sell_shares, 0)  # ??????
                         elif stop_loss_type == 'drop':
-                            # 追跌止损：卖出追跌买入的全部仓位
+                            # ????????????????
                             drop_total_shares = sum([
                                 int(initial_capital * MAIN_ACCOUNT_BUY_RATIOS[j] / main_account_drop_buy_price)
                                 for j in range(len(MAIN_ACCOUNT_BUY_LEVELS))
                                 if main_account_sell_buy_levels_triggered[j]
                             ]) if main_account_drop_buy_price > 0 else 0
                             sell_shares = min(drop_total_shares, main_account_sell_buy_position)
-                            sell_shares = max(sell_shares, 0)  # 确保不为负数
+                            sell_shares = max(sell_shares, 0)  # ??????
+                        else:
+                            sell_shares = 0
+                    elif main_account_had_rise_entry_in_cycle:
+                        if newly_triggered_levels:
+                            step_ratio = sum(sell_ratios[idx] for idx in newly_triggered_levels if idx < len(sell_ratios))
+                            sell_shares = int(main_account_sell_buy_position * step_ratio)
+                            sell_shares = min(sell_shares, main_account_sell_buy_position)
+                            trade_level = newly_triggered_levels[-1] + 1
                         else:
                             sell_shares = 0
                     elif max_triggered_level >= 0:
                         total_ratio = sum(sell_ratios[:max_triggered_level + 1])
                         sell_shares = int(main_account_sell_buy_position * total_ratio)
                         sell_shares = min(sell_shares, main_account_sell_buy_position)
+                        trade_level = max_triggered_level + 1
                     else:
                         sell_shares = 0
-                    
                     if sell_shares > 0:
                         remaining_after_sell = main_account_sell_buy_position - sell_shares
                         if remaining_after_sell <= MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR:
@@ -683,7 +723,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             'price': close_price,
                             'shares': sell_shares,
                             'profit': profit,
-                            'level': max_triggered_level + 1 if not stop_loss_triggered else 0
+                            'level': trade_level if not stop_loss_triggered else 0
                         })
                         if stop_loss_triggered:
                             if stop_loss_type == 'rise':
@@ -693,9 +733,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             else:
                                 triggered_levels = "止损"
                         else:
-                            # 区分追跌卖出和追涨卖出
-                            sell_source = "追涨" if main_account_had_rise_entry_in_cycle else "追跌"
-                            triggered_levels = ','.join([f"{sell_source}卖{i+1}" for i in range(max_triggered_level + 1)])
+                            if main_account_had_rise_entry_in_cycle and newly_triggered_levels:
+                                triggered_levels = ",".join([f"\u8ffd\u6da8\u5356{i+1}" for i in newly_triggered_levels])
+                            else:
+                                sell_source = "\u8ffd\u6da8" if main_account_had_rise_entry_in_cycle else "\u8ffd\u8dcc"
+                                triggered_levels = ",".join([f"{sell_source}\u5356{i+1}" for i in range(max_triggered_level + 1)])
                         remaining_position = main_account_sell_buy_position
                         action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f} \u6301\u4ed3{remaining_position}"
                         # 卖出后重置买入档位，允许在更低价格继续追跌买入
@@ -705,6 +747,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_sell_buy_total_shares = 0
                             main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
+                            main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                             main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                             # 重置独立的追涨和追跌买入价格
                             main_account_rise_buy_price = 0
