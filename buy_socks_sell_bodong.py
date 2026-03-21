@@ -547,7 +547,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             triggered_rise_levels.append((rise_idx, rise_ratio))
 
                     for rise_idx, rise_ratio in triggered_rise_levels:
-                        buy_amount = initial_capital * rise_ratio
+                        # 使用当前现金比例计算买入金额
+                        buy_amount = cash * rise_ratio
                         new_position = int(buy_amount / close_price)
                         if new_position > 0 and cash >= new_position * close_price:
                             cost = new_position * close_price
@@ -561,14 +562,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             if main_account_rise_buy_price == 0:
                                 main_account_rise_buy_price = close_price
                             else:
-                                # 计算追涨买入的总股数
-                                rise_total_shares = sum([
-                                    int(initial_capital * MAIN_ACCOUNT_UPTREND_RATIOS[j] / close_price)
-                                    for j in range(len(MAIN_ACCOUNT_UPTREND_LEVELS))
-                                    if main_account_rise_buy_levels_triggered[j] or j == rise_idx
-                                ])
-                                if rise_total_shares > 0:
-                                    main_account_rise_buy_price = (main_account_rise_buy_price * (rise_total_shares - new_position) + close_price * new_position) / rise_total_shares
+                                # 计算追涨买入的总股数（使用实际买入时的现金比例）
+                                # 这里简化处理，直接用当前持仓计算加权平均
+                                main_account_rise_buy_price = (main_account_rise_buy_price * main_account_sell_buy_position + close_price * new_position) / (main_account_sell_buy_position + new_position)
                             main_account_sell_buy_position += new_position
                             main_account_sell_buy_total_shares += new_position
                             trade_count += 1
@@ -602,7 +598,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         continue
 
                     ratio = MAIN_ACCOUNT_BUY_RATIOS[drop_idx]
-                    buy_amount = initial_capital * ratio
+                    # 使用当前现金比例计算买入金额
+                    buy_amount = cash * ratio
                     new_position = int(buy_amount / close_price)
                     if new_position <= 0 or cash < new_position * close_price:
                         continue
@@ -621,14 +618,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     if main_account_drop_buy_price == 0:
                         main_account_drop_buy_price = close_price
                     else:
-                        # 计算追跌买入的总股数
-                        drop_total_shares = sum([
-                            int(initial_capital * MAIN_ACCOUNT_BUY_RATIOS[j] / close_price)
-                            for j in range(len(MAIN_ACCOUNT_BUY_LEVELS))
-                            if main_account_sell_buy_levels_triggered[j] or j == drop_idx
-                        ])
-                        if drop_total_shares > 0:
-                            main_account_drop_buy_price = (main_account_drop_buy_price * (drop_total_shares - new_position) + close_price * new_position) / drop_total_shares
+                        # 简化处理，直接用当前持仓计算加权平均
+                        main_account_drop_buy_price = (main_account_drop_buy_price * main_account_sell_buy_position + close_price * new_position) / (main_account_sell_buy_position + new_position)
 
                     main_account_sell_buy_position += new_position
                     main_account_sell_buy_total_shares += new_position
@@ -748,23 +739,13 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     # reset rise/drop independent prices
                     if stop_loss_triggered:
                         if stop_loss_type == 'rise':
-                            # reset rise/drop independent prices
-                            rise_total_shares = sum([
-                                int(initial_capital * MAIN_ACCOUNT_UPTREND_RATIOS[j] / main_account_rise_buy_price)
-                                for j in range(len(MAIN_ACCOUNT_UPTREND_LEVELS))
-                                if main_account_rise_buy_levels_triggered[j]
-                            ]) if main_account_rise_buy_price > 0 else 0
-                            sell_shares = min(rise_total_shares, main_account_sell_buy_position)
-                            sell_shares = max(sell_shares, 0)  # reset rise/drop independent prices
+                            # 止损时卖出所有追涨买入的仓位
+                            sell_shares = main_account_sell_buy_position
+                            sell_shares = max(sell_shares, 0)
                         elif stop_loss_type == 'drop':
-                            # reset rise/drop independent prices
-                            drop_total_shares = sum([
-                                int(initial_capital * MAIN_ACCOUNT_BUY_RATIOS[j] / main_account_drop_buy_price)
-                                for j in range(len(MAIN_ACCOUNT_BUY_LEVELS))
-                                if main_account_sell_buy_levels_triggered[j]
-                            ]) if main_account_drop_buy_price > 0 else 0
-                            sell_shares = min(drop_total_shares, main_account_sell_buy_position)
-                            sell_shares = max(sell_shares, 0)  # reset rise/drop independent prices
+                            # 止损时卖出所有追跌买入的仓位
+                            sell_shares = main_account_sell_buy_position
+                            sell_shares = max(sell_shares, 0)
                         else:
                             sell_shares = 0
                     elif main_account_had_rise_entry_in_cycle:
