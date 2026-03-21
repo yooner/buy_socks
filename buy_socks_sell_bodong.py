@@ -82,14 +82,16 @@ MAIN_ACCOUNT_UPTREND_UNLOCK_EPS = 0.001
 
 # 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
+MAIN_ACCOUNT_UPTREND_STOP_LOSS_ON_MA20 = False  # 追涨买入跌破MA20时清仓
+MAIN_ACCOUNT_UPTREND_STOP_LOSS_MA20_RATIO = 0.999  # 跌破MA20的比例阈值（如MA20*0.95），防止震荡
 
 # 追跌买入止损阈值：当追跌买入的三档都买入后，跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_DROP_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
-MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = True  # 是否需要三档都买入后才触发止损
+MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = False  # 是否需要三档都买入后才触发止损
 
 # 买入A与卖出A之间的止盈机制
 ENABLE_MAIN_ACCOUNT_TAKE_PROFIT = True  # 是否启用止盈机制
-MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.15, 0.20, 0.30]  # 止盈档位（涨幅10%/20%/30%/40%触发）
+MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.15, 0.23, 0.30]  # 止盈档位（涨幅10%/20%/30%/40%触发）
 MAIN_ACCOUNT_TAKE_PROFIT_RATIOS = [0.20, 0.40, 0.40]  # 对应卖出仓位比例（卖出20%/20%/30%/400%）
 
 # 买入A与卖出A之间的止损机制
@@ -233,7 +235,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_ma20_converge_days = 0
         # 追涨和追跌分别维护独立的加权平均买入价格
         main_account_rise_buy_price = 0  # 追涨买入的加权平均价格
+        main_account_rise_buy_shares = 0  # 追涨买入的总股数
         main_account_drop_buy_price = 0  # 追跌买入的加权平均价格
+        main_account_initial_cash = 0  # 主账户区间交易的初始资金（卖出时的现金）
     else:
         main_account_sell_buy_levels_triggered = []
         main_account_sell_buy_position = 0
@@ -251,7 +255,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_prev_distance_to_ma20 = None
         main_account_ma20_converge_days = 0
         main_account_rise_buy_price = 0
+        main_account_rise_buy_shares = 0
         main_account_drop_buy_price = 0
+        main_account_initial_cash = 0
 
     # 收集所有输出内容
     output_lines = []
@@ -395,6 +401,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_had_rise_entry_in_cycle = False
                         main_account_prev_distance_to_ma20 = None
                         main_account_ma20_converge_days = 0
+                        # 记录卖出时的现金作为区间交易的初始资金
+                        main_account_initial_cash = cash
                         # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
                         main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         main_account_sell_buy_position = 0
@@ -457,8 +465,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 # 条件A买入（全仓）
                 if condition_a:
                     buy_price = close_price
-                    new_position = int(cash / buy_price)
-                    if new_position > 0:
+                    new_position = int(cash / buy_price / 100) * 100
+                    if new_position >= 100:
                         # 如果主账户在卖出A与买入A之间还有持仓，先全部卖出
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_sell_buy_position > 0:
                             # 先卖出持仓（按当前价格）
@@ -485,8 +493,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                             main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                             main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
-                            # 重新计算可买入股数
-                            new_position = int(cash / buy_price)
+                            # 重新计算可买入股数（100的整数倍）
+                            new_position = int(cash / buy_price / 100) * 100
                         
                         position = new_position
                         cost = position * buy_price
@@ -547,10 +555,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             triggered_rise_levels.append((rise_idx, rise_ratio))
 
                     for rise_idx, rise_ratio in triggered_rise_levels:
-                        # 使用当前现金比例计算买入金额
-                        buy_amount = cash * rise_ratio
-                        new_position = int(buy_amount / close_price)
-                        if new_position > 0 and cash >= new_position * close_price:
+                        buy_amount = main_account_initial_cash * rise_ratio
+                        buy_amount = min(buy_amount, cash)
+                        new_position = int(buy_amount / close_price / 100) * 100
+                        if new_position >= 100 and cash >= new_position * close_price:
                             cost = new_position * close_price
                             cash -= cost
                             # 更新总持仓的加权平均价格
@@ -562,9 +570,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             if main_account_rise_buy_price == 0:
                                 main_account_rise_buy_price = close_price
                             else:
-                                # 计算追涨买入的总股数（使用实际买入时的现金比例）
-                                # 这里简化处理，直接用当前持仓计算加权平均
-                                main_account_rise_buy_price = (main_account_rise_buy_price * main_account_sell_buy_position + close_price * new_position) / (main_account_sell_buy_position + new_position)
+                                main_account_rise_buy_price = (main_account_rise_buy_price * main_account_rise_buy_shares + close_price * new_position) / (main_account_rise_buy_shares + new_position)
+                            main_account_rise_buy_shares += new_position
                             main_account_sell_buy_position += new_position
                             main_account_sell_buy_total_shares += new_position
                             trade_count += 1
@@ -598,10 +605,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         continue
 
                     ratio = MAIN_ACCOUNT_BUY_RATIOS[drop_idx]
-                    # 使用当前现金比例计算买入金额
-                    buy_amount = cash * ratio
-                    new_position = int(buy_amount / close_price)
-                    if new_position <= 0 or cash < new_position * close_price:
+                    buy_amount = main_account_initial_cash * ratio
+                    buy_amount = min(buy_amount, cash)
+                    new_position = int(buy_amount / close_price / 100) * 100
+                    if new_position < 100 or cash < new_position * close_price:
                         continue
 
                     cost = new_position * close_price
@@ -674,7 +681,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 
                 # 检查是否触发止损（追涨或追跌）
                 stop_loss_triggered = False
-                stop_loss_type = None  # 'rise' 或 'drop'
+                stop_loss_type = None  # 'rise' 或 'drop' 或 'ma20'
                 
                 # 检查追涨止损
                 if main_account_had_rise_entry_in_cycle and main_account_rise_buy_price > 0:
@@ -682,6 +689,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     if rise_profit_pct <= MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT:
                         stop_loss_triggered = True
                         stop_loss_type = 'rise'
+                    # 检查追涨买入跌破MA20清仓（需要跌破MA20的比例阈值）
+                    elif MAIN_ACCOUNT_UPTREND_STOP_LOSS_ON_MA20 and pd.notna(ma20) and ma20 > 0:
+                        ma20_threshold = ma20 * MAIN_ACCOUNT_UPTREND_STOP_LOSS_MA20_RATIO
+                        if close_price < ma20_threshold:
+                            stop_loss_triggered = True
+                            stop_loss_type = 'ma20'
                 
                 # 检查追跌止损（需要三档都买入后才触发）
                 if not stop_loss_triggered and main_account_drop_buy_price > 0:
@@ -738,8 +751,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     trade_level = 0
                     # reset rise/drop independent prices
                     if stop_loss_triggered:
-                        if stop_loss_type == 'rise':
-                            # 止损时卖出所有追涨买入的仓位
+                        if stop_loss_type in ('rise', 'ma20'):
+                            # 止损时卖出所有追涨买入的仓位（包括跌破MA20清仓）
                             sell_shares = main_account_sell_buy_position
                             sell_shares = max(sell_shares, 0)
                         elif stop_loss_type == 'drop':
@@ -771,6 +784,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         profit = (close_price - main_account_sell_buy_price) * sell_shares
                         cash += sell_value
                         main_account_sell_buy_position -= sell_shares
+                        # 按比例更新追涨买入股数
+                        if main_account_rise_buy_shares > 0:
+                            main_account_rise_buy_shares -= sell_shares
+                            if main_account_rise_buy_shares < 0:
+                                main_account_rise_buy_shares = 0
                         trade_count += 1
                         trades.append({
                             'day': day_num,
@@ -784,6 +802,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         if stop_loss_triggered:
                             if stop_loss_type == 'rise':
                                 triggered_levels = "止损(追涨)"
+                            elif stop_loss_type == 'ma20':
+                                triggered_levels = "止损(MA20)"
                             elif stop_loss_type == 'drop':
                                 triggered_levels = "止损(追跌)"
                             else:
@@ -807,6 +827,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                             # reset rise/drop independent prices
                             main_account_rise_buy_price = 0
+                            main_account_rise_buy_shares = 0
                             main_account_drop_buy_price = 0
                             if main_account_had_rise_entry_in_cycle:
                                 main_account_rise_reentry_locked = True
@@ -817,10 +838,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             holding_start_date = None
                         else:
                             # reset rise/drop independent prices
-                            if stop_loss_type == 'rise':
+                            if stop_loss_type in ('rise', 'ma20'):
                                 # reset rise/drop independent prices
                                 main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
                                 main_account_rise_buy_price = 0
+                                main_account_rise_buy_shares = 0
                                 if main_account_had_rise_entry_in_cycle:
                                     main_account_rise_reentry_locked = True
                                 main_account_had_rise_entry_in_cycle = False
