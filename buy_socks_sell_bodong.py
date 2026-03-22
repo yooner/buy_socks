@@ -85,6 +85,10 @@ MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR = 4.0
 # 区间交易卖出：极度远离MA20时锁定（适用于追涨/补跌）
 ENABLE_MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK = True
 MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK_PRICE_ATR = 4.0
+# 区间交易极度买入：空仓且极度符合条件时全仓买入
+ENABLE_MAIN_ACCOUNT_EXTREME_BUY_WHEN_EMPTY = True  # 空仓且价ATR倍 >= 阈值时全仓买入
+MAIN_ACCOUNT_EXTREME_BUY_PRICE_ATR_THRESHOLD = 4.0  # 极度买入价ATR倍阈值
+MAIN_ACCOUNT_EXTREME_BUY_CONSECUTIVE_DAYS = 1  # 极度买入需要连续满足的天数
 
 # 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
@@ -256,6 +260,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_extreme_lock_active = False
         main_account_extreme_peak_price_atr = None
         main_account_extreme_converge_days = 0
+        main_account_extreme_buy_consecutive_days = 0  # 极度买入连续满足天数计数器
     else:
         main_account_sell_buy_levels_triggered = []
         main_account_sell_buy_position = 0
@@ -280,6 +285,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_extreme_lock_active = False
         main_account_extreme_peak_price_atr = None
         main_account_extreme_converge_days = 0
+        main_account_extreme_buy_consecutive_days = 0  # 极度买入连续满足天数计数器
 
     # 收集所有输出内容
     output_lines = []
@@ -299,9 +305,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖")
     log_print(f"{'='*175}\n")
 
-    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'操作':<30} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>8} {'MA20':>8} {'ATR14':>8} {'波动率':>8} {'波幅%':>8} {'价ATR倍':>8} {'极度':>4} {'操作':<30} {'持仓':>8} {'市值':>12}"
     log_print(header)
-    log_print("-" * 140)
+    log_print("-" * 145)
     
     # 遍历每一天进行回测
     for i in range(len(df)):
@@ -598,6 +604,44 @@ def run_backtest(stock_code: str = STOCK_CODE):
             
             # 标记当天是否有买入操作
             has_buy_today = False
+            
+            # 极度买入：空仓且极度符合条件时全仓买入（需要连续满足天数）
+            if ENABLE_MAIN_ACCOUNT_EXTREME_BUY_WHEN_EMPTY and main_account_sell_buy_position == 0:
+                current_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+                if current_price_atr >= MAIN_ACCOUNT_EXTREME_BUY_PRICE_ATR_THRESHOLD:
+                    main_account_extreme_buy_consecutive_days += 1
+                    # 达到连续天数要求才买入
+                    if main_account_extreme_buy_consecutive_days >= MAIN_ACCOUNT_EXTREME_BUY_CONSECUTIVE_DAYS:
+                        # 全仓买入
+                        new_position = int(cash / close_price / 100) * 100
+                        if new_position >= 100 and cash >= new_position * close_price:
+                            cost = new_position * close_price
+                            cash -= cost
+                            main_account_sell_buy_position = new_position
+                            main_account_sell_buy_price = close_price
+                            main_account_sell_buy_total_shares = new_position
+                            main_account_rise_buy_price = close_price
+                            main_account_rise_buy_shares = new_position
+                            main_account_had_rise_entry_in_cycle = True
+                            trade_count += 1
+                            trades.append({
+                                'day': day_num,
+                                'date': date_str,
+                                'action': '买入',
+                                'price': close_price,
+                                'shares': new_position,
+                                'type': '极度买入'
+                            })
+                            action = f"主账户极度买入@{close_price:.2f} 持仓{new_position}"
+                            has_buy_today = True
+                            # 记录持仓开始日期
+                            if holding_start_date is None:
+                                holding_start_date = date_str
+                            # 买入后重置计数器
+                            main_account_extreme_buy_consecutive_days = 0
+                else:
+                    # 不满足条件，重置计数器
+                    main_account_extreme_buy_consecutive_days = 0
 
             if ENABLE_MAIN_ACCOUNT_UPTREND_BUY and (not main_account_rise_reentry_locked) and rise_anchor_price > 0:
                 prev_ma20 = df.iloc[i-1]['ma20'] if i > 0 and pd.notna(df.iloc[i-1]['ma20']) else ma20
@@ -969,6 +1013,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_extreme_lock_active = False
                             main_account_extreme_peak_price_atr = None
                             main_account_extreme_converge_days = 0
+                            main_account_extreme_buy_consecutive_days = 0  # 重置极度买入计数器
                         else:
                             # reset rise/drop independent prices
                             if stop_loss_type in ('rise', 'ma20'):
@@ -983,6 +1028,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 main_account_ma20_converge_days = 0
                                 # 重置低于MA20天数计数器
                                 main_account_below_ma20_days = 0
+                                main_account_extreme_buy_consecutive_days = 0  # 重置极度买入计数器
                             elif stop_loss_type == 'drop':
                                 # reset rise/drop independent prices
                                 main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
@@ -991,6 +1037,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 main_account_extreme_lock_active = False
                                 main_account_extreme_peak_price_atr = None
                                 main_account_extreme_converge_days = 0
+                                main_account_extreme_buy_consecutive_days = 0  # 重置极度买入计数器
 
         display_position = position
         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -1004,8 +1051,12 @@ def run_backtest(stock_code: str = STOCK_CODE):
         volatility_str = f"{volatility:.2f}" if pd.notna(volatility) else "N/A"
         volatility_pct_str = f"{row['波动率百分比']:.1f}" if pd.notna(row['波动率百分比']) else "N/A"
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
+        
+        # 标记极度远离MA20的情况（价ATR倍 >= 4.0）
+        price_atr_value = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+        extreme_marker = "★" if price_atr_value >= MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR else ""
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {action:<30} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr14_str:>8} {volatility_str:>8} {volatility_pct_str:>8} {price_atr_ratio_str:>8} {extreme_marker:>4} {action:<30} {position_str:>8} {market_value:>12,.2f}")
     
     # 计算最终收益（主仓 + 主账户区间仓位）
     final_position = position
