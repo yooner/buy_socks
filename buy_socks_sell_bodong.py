@@ -4,6 +4,7 @@
 卖出：波动率降低至前一天97%以下
 """
 
+
 import pandas as pd
 import numpy as np
 import os
@@ -75,19 +76,29 @@ MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS = [1.1, 2.0, 3.0, 3.8]
 MAIN_ACCOUNT_UPTREND_SELL_RATIOS = [0.40, 0.35, 0.25]
 ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT = True
 MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS = [0.10, 0.20, 0.40]
-# Dynamic unlock for uptrend sell lock
+# 动态解锁：价ATR倍连续向0靠近时，允许释放卖出档位锁
 ENABLE_MAIN_ACCOUNT_UPTREND_DYNAMIC_UNLOCK = True
 MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS = 2
 MAIN_ACCOUNT_UPTREND_UNLOCK_EPS = 0.001
+# 买入A止盈：极度远离MA20时锁定止盈（价ATR倍阈值）
+MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR = 4.0
+# 区间交易卖出：极度远离MA20时锁定（适用于追涨/补跌）
+ENABLE_MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK = True
+MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK_PRICE_ATR = 4.0
 
 # 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
-MAIN_ACCOUNT_UPTREND_STOP_LOSS_ON_MA20 = False  # 追涨买入跌破MA20时清仓
-MAIN_ACCOUNT_UPTREND_STOP_LOSS_MA20_RATIO = 0.999  # 跌破MA20的比例阈值（如MA20*0.95），防止震荡
+MAIN_ACCOUNT_UPTREND_STOP_LOSS_ON_MA20 = True  # 追涨买入跌破MA20时清仓
+# 低于MA20卖出优化配置
+MAIN_ACCOUNT_BELOW_MA20_CONSECUTIVE_DAYS = 3  # 连续低于MA20的天数阈值（默认3天）
+MAIN_ACCOUNT_BELOW_MA20_THRESHOLD = -0.04  # 低于MA20的阈值（默认3%）
+MAIN_ACCOUNT_BELOW_MA20_EMERGENCY_THRESHOLD = -0.08  # 紧急卖出阈值（默认8%，超过直接卖出）
 
 # 追跌买入止损阈值：当追跌买入的三档都买入后，跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_DROP_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
-MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = False  # 是否需要三档都买入后才触发止损
+MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = True  # 是否需要三档都买入后才触发止损
+
+
 
 # 买入A与卖出A之间的止盈机制
 ENABLE_MAIN_ACCOUNT_TAKE_PROFIT = True  # 是否启用止盈机制
@@ -211,6 +222,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     a_take_profit_first_triggered = False
     a_take_profit_prev_distance_to_ma20 = None
     a_take_profit_converge_days = 0
+    a_take_profit_extreme_lock_active = False
+    a_take_profit_extreme_peak_distance_to_ma20 = None
+    a_take_profit_extreme_converge_days = 0
     
     # 买入A与卖出A之间的止损机制状态变量
     stop_loss_levels_triggered = [False] * len(MAIN_ACCOUNT_STOP_LOSS_LEVELS) if ENABLE_MAIN_ACCOUNT_STOP_LOSS else []
@@ -238,6 +252,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_rise_buy_shares = 0  # 追涨买入的总股数
         main_account_drop_buy_price = 0  # 追跌买入的加权平均价格
         main_account_initial_cash = 0  # 主账户区间交易的初始资金（卖出时的现金）
+        main_account_below_ma20_days = 0  # 连续低于MA20的天数计数器
+        main_account_extreme_lock_active = False
+        main_account_extreme_peak_price_atr = None
+        main_account_extreme_converge_days = 0
     else:
         main_account_sell_buy_levels_triggered = []
         main_account_sell_buy_position = 0
@@ -258,6 +276,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
         main_account_rise_buy_shares = 0
         main_account_drop_buy_price = 0
         main_account_initial_cash = 0
+        main_account_below_ma20_days = 0  # 连续低于MA20的天数计数器
+        main_account_extreme_lock_active = False
+        main_account_extreme_peak_price_atr = None
+        main_account_extreme_converge_days = 0
 
     # 收集所有输出内容
     output_lines = []
@@ -319,38 +341,76 @@ def run_backtest(stock_code: str = STOCK_CODE):
             take_profit_triggered = False
             take_profit_level = -1
             if position > 0 and ENABLE_MAIN_ACCOUNT_TAKE_PROFIT and buy_price > 0:
-                # ????????????????????
-                if (
-                    ENABLE_MAIN_ACCOUNT_UPTREND_DYNAMIC_UNLOCK
-                    and a_take_profit_first_triggered
-                    and pd.notna(ma20)
-                    and ma20 > 0
-                    and close_price > ma20
-                ):
-                    current_distance_to_ma20 = (close_price - ma20) / ma20
-                    if a_take_profit_prev_distance_to_ma20 is not None and (
-                        current_distance_to_ma20 + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS < a_take_profit_prev_distance_to_ma20
-                    ):
-                        a_take_profit_converge_days += 1
-                    else:
-                        a_take_profit_converge_days = 0
-                    a_take_profit_prev_distance_to_ma20 = current_distance_to_ma20
-                    if (
-                        a_take_profit_converge_days >= MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS
-                        and len(take_profit_levels_triggered) > 0
-                    ):
-                        take_profit_levels_triggered[0] = False
-                else:
-                    a_take_profit_prev_distance_to_ma20 = None
-                    a_take_profit_converge_days = 0
+                # 买入A止盈动态解锁：首次止盈后才启用
+                # 同时支持极度远离MA20时锁定止盈，直到场景破坏
+                current_price_atr_multiple = row['价ATR倍'] if pd.notna(row['价ATR倍']) else np.nan
 
-                profit_pct = (close_price - buy_price) / buy_price
-                for tp_idx, tp_level in enumerate(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS):
-                    if not take_profit_levels_triggered[tp_idx] and profit_pct >= tp_level:
-                        take_profit_triggered = True
-                        take_profit_level = tp_idx
-                        break
-            
+                # 极度远离MA20：激活止盈锁
+                if pd.notna(current_price_atr_multiple) and current_price_atr_multiple >= MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR:
+                    if not a_take_profit_extreme_lock_active:
+                        a_take_profit_extreme_lock_active = True
+                        a_take_profit_extreme_peak_distance_to_ma20 = current_price_atr_multiple
+                        a_take_profit_extreme_converge_days = 0
+                    elif (
+                        a_take_profit_extreme_peak_distance_to_ma20 is None
+                        or current_price_atr_multiple > a_take_profit_extreme_peak_distance_to_ma20 + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS
+                    ):
+                        a_take_profit_extreme_peak_distance_to_ma20 = current_price_atr_multiple
+                        a_take_profit_extreme_converge_days = 0
+
+                # 锁定后，直到场景破坏（跌回MA20或价ATR倍持续回落）才解锁
+                if a_take_profit_extreme_lock_active:
+                    if pd.isna(current_price_atr_multiple) or (pd.notna(ma20) and close_price <= ma20):
+                        a_take_profit_extreme_lock_active = False
+                        a_take_profit_extreme_peak_distance_to_ma20 = None
+                        a_take_profit_extreme_converge_days = 0
+                    else:
+                        if (
+                            a_take_profit_extreme_peak_distance_to_ma20 is None
+                            or current_price_atr_multiple > a_take_profit_extreme_peak_distance_to_ma20 + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS
+                        ):
+                            a_take_profit_extreme_peak_distance_to_ma20 = current_price_atr_multiple
+                            a_take_profit_extreme_converge_days = 0
+                        elif current_price_atr_multiple + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS < a_take_profit_extreme_peak_distance_to_ma20:
+                            a_take_profit_extreme_converge_days += 1
+
+                        if a_take_profit_extreme_converge_days >= MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS:
+                            a_take_profit_extreme_lock_active = False
+                            a_take_profit_extreme_peak_distance_to_ma20 = None
+                            a_take_profit_extreme_converge_days = 0
+
+                # 仅在未被极端拉伸锁定时，才执行止盈触发判断
+                if not a_take_profit_extreme_lock_active:
+                    if (
+                        ENABLE_MAIN_ACCOUNT_UPTREND_DYNAMIC_UNLOCK
+                        and a_take_profit_first_triggered
+                        and pd.notna(ma20)
+                        and ma20 > 0
+                        and close_price > ma20
+                    ):
+                        current_distance_to_ma20 = (close_price - ma20) / ma20
+                        if a_take_profit_prev_distance_to_ma20 is not None and (
+                            current_distance_to_ma20 + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS < a_take_profit_prev_distance_to_ma20
+                        ):
+                            a_take_profit_converge_days += 1
+                        else:
+                            a_take_profit_converge_days = 0
+                        a_take_profit_prev_distance_to_ma20 = current_distance_to_ma20
+                        if (
+                            a_take_profit_converge_days >= MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS
+                            and len(take_profit_levels_triggered) > 0
+                        ):
+                            take_profit_levels_triggered[0] = False
+                    else:
+                        a_take_profit_prev_distance_to_ma20 = None
+                        a_take_profit_converge_days = 0
+
+                    profit_pct = (close_price - buy_price) / buy_price
+                    for tp_idx, tp_level in enumerate(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS):
+                        if not take_profit_levels_triggered[tp_idx] and profit_pct >= tp_level:
+                            take_profit_triggered = True
+                            take_profit_level = tp_idx
+                            break
             if position > 0:
                 # 卖出条件：波动率>0且降低，且降至前一天97%以下
                 if volatility > 0 and is_volatility_declining:
@@ -389,6 +449,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     a_take_profit_first_triggered = False
                     a_take_profit_prev_distance_to_ma20 = None
                     a_take_profit_converge_days = 0
+                    a_take_profit_extreme_lock_active = False
+                    a_take_profit_extreme_peak_distance_to_ma20 = None
+                    a_take_profit_extreme_converge_days = 0
                     
                     # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
                     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -401,6 +464,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_had_rise_entry_in_cycle = False
                         main_account_prev_distance_to_ma20 = None
                         main_account_ma20_converge_days = 0
+                        main_account_extreme_lock_active = False
+                        main_account_extreme_peak_price_atr = None
+                        main_account_extreme_converge_days = 0
                         # 记录卖出时的现金作为区间交易的初始资金
                         main_account_initial_cash = cash
                         # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
@@ -411,6 +477,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                         main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                         main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
+                        # 重置追涨/追跌的独立加权平均价格
+                        main_account_rise_buy_price = 0
+                        main_account_rise_buy_shares = 0
+                        main_account_drop_buy_price = 0
                 elif take_profit_triggered and take_profit_level >= 0:
                     # 止盈卖出：部分卖出
                     tp_ratio = MAIN_ACCOUNT_TAKE_PROFIT_RATIOS[take_profit_level]
@@ -504,6 +574,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         a_take_profit_first_triggered = False
                         a_take_profit_prev_distance_to_ma20 = None
                         a_take_profit_converge_days = 0
+                        a_take_profit_extreme_lock_active = False
+                        a_take_profit_extreme_peak_distance_to_ma20 = None
+                        a_take_profit_extreme_converge_days = 0
                         action = f"买入A@{buy_price:.2f}"
                         trades.append({
                             'day': day_num,
@@ -594,7 +667,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
                     if executed_rise_levels:
                         rise_levels_str = ','.join([f"\u8ffd\u6da8\u4e70{idx+1}" for idx in executed_rise_levels])
-                        action = f"\u4e3b\u8d26\u6237{rise_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
+                        # 在买入输出中增加加权价格信息
+                        rise_buy_price_info = f" 加权价={main_account_rise_buy_price:.2f}" if main_account_rise_buy_price > 0 else ""
+                        action = f"\u4e3b\u8d26\u6237{rise_levels_str}@{close_price:.2f}{rise_buy_price_info} \u6301\u4ed3{main_account_sell_buy_position}"
                         has_buy_today = True
             if close_price < ma20 and drop_anchor_price > 0 and not has_buy_today:
                 executed_drop_levels = []
@@ -652,7 +727,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
             # 只有当当天没有买入操作时，才执行卖出
             if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0 and not has_buy_today:
-                # Dynamic unlock for uptrend sell lock state
+                # 追涨卖出锁定动态解锁逻辑
                 if (
                     ENABLE_MAIN_ACCOUNT_UPTREND_DYNAMIC_UNLOCK
                     and main_account_had_rise_entry_in_cycle
@@ -677,6 +752,41 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     main_account_prev_distance_to_ma20 = None
                     main_account_ma20_converge_days = 0
                 # 计算当前持仓的盈亏百分比（使用总持仓的平均价格）
+                # 区间仓极端拉伸锁：价ATR倍过高时锁定卖出，防止过早止盈
+                current_cycle_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else np.nan
+                if ENABLE_MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK:
+                    if pd.notna(current_cycle_price_atr) and current_cycle_price_atr >= MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK_PRICE_ATR:
+                        if not main_account_extreme_lock_active:
+                            main_account_extreme_lock_active = True
+                            main_account_extreme_peak_price_atr = current_cycle_price_atr
+                            main_account_extreme_converge_days = 0
+                        elif (
+                            main_account_extreme_peak_price_atr is None
+                            or current_cycle_price_atr > main_account_extreme_peak_price_atr + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS
+                        ):
+                            main_account_extreme_peak_price_atr = current_cycle_price_atr
+                            main_account_extreme_converge_days = 0
+
+                    if main_account_extreme_lock_active:
+                        if pd.isna(current_cycle_price_atr) or (pd.notna(ma20) and close_price <= ma20):
+                            main_account_extreme_lock_active = False
+                            main_account_extreme_peak_price_atr = None
+                            main_account_extreme_converge_days = 0
+                        else:
+                            if (
+                                main_account_extreme_peak_price_atr is None
+                                or current_cycle_price_atr > main_account_extreme_peak_price_atr + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS
+                            ):
+                                main_account_extreme_peak_price_atr = current_cycle_price_atr
+                                main_account_extreme_converge_days = 0
+                            elif current_cycle_price_atr + MAIN_ACCOUNT_UPTREND_UNLOCK_EPS < main_account_extreme_peak_price_atr:
+                                main_account_extreme_converge_days += 1
+
+                            if main_account_extreme_converge_days >= MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS:
+                                main_account_extreme_lock_active = False
+                                main_account_extreme_peak_price_atr = None
+                                main_account_extreme_converge_days = 0
+
                 position_profit_pct = (close_price - main_account_sell_buy_price) / main_account_sell_buy_price
                 
                 # 检查是否触发止损（追涨或追跌）
@@ -689,12 +799,24 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     if rise_profit_pct <= MAIN_ACCOUNT_UPTREND_STOP_LOSS_PCT:
                         stop_loss_triggered = True
                         stop_loss_type = 'rise'
-                    # 检查追涨买入跌破MA20清仓（需要跌破MA20的比例阈值）
+                    # 检查追涨买入跌破MA20清仓（优化版：连续天数+紧急卖出阈值）
                     elif MAIN_ACCOUNT_UPTREND_STOP_LOSS_ON_MA20 and pd.notna(ma20) and ma20 > 0:
-                        ma20_threshold = ma20 * MAIN_ACCOUNT_UPTREND_STOP_LOSS_MA20_RATIO
-                        if close_price < ma20_threshold:
+                        distance_to_ma20_pct = (close_price - ma20) / ma20
+                        # 紧急卖出：跌幅超过紧急阈值（如8%）直接卖出
+                        if distance_to_ma20_pct <= MAIN_ACCOUNT_BELOW_MA20_EMERGENCY_THRESHOLD:
                             stop_loss_triggered = True
                             stop_loss_type = 'ma20'
+                            main_account_below_ma20_days = 0  # 重置计数器
+                        # 普通卖出：连续低于MA20阈值达到指定天数
+                        elif distance_to_ma20_pct <= MAIN_ACCOUNT_BELOW_MA20_THRESHOLD:
+                            main_account_below_ma20_days += 1
+                            if main_account_below_ma20_days >= MAIN_ACCOUNT_BELOW_MA20_CONSECUTIVE_DAYS:
+                                stop_loss_triggered = True
+                                stop_loss_type = 'ma20'
+                                main_account_below_ma20_days = 0  # 重置计数器
+                        else:
+                            # 价格回到MA20阈值之上，重置计数器
+                            main_account_below_ma20_days = 0
                 
                 # 检查追跌止损（需要三档都买入后才触发）
                 if not stop_loss_triggered and main_account_drop_buy_price > 0:
@@ -711,13 +833,17 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     (close_price - main_account_rise_buy_price) / main_account_rise_buy_price
                     if main_account_rise_buy_price > 0 else 0
                 )
+
                 use_uptrend_profit_sell = (
                     main_account_had_rise_entry_in_cycle
                     and ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT
                     and main_account_rise_buy_price > 0
                 )
 
-                can_evaluate_sell = stop_loss_triggered or use_uptrend_profit_sell or current_atr > 0
+                can_evaluate_sell = stop_loss_triggered or (
+                    (not main_account_extreme_lock_active)
+                    and (use_uptrend_profit_sell or current_atr > 0)
+                )
                 if can_evaluate_sell:
                     price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr if current_atr > 0 else 0
 
@@ -815,7 +941,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 sell_source = "\u8ffd\u6da8" if main_account_had_rise_entry_in_cycle else "\u8ffd\u8dcc"
                                 triggered_levels = ",".join([f"{sell_source}\u5356{i+1}" for i in range(max_triggered_level + 1)])
                         remaining_position = main_account_sell_buy_position
-                        action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f} \u6301\u4ed3{remaining_position}"
+                        # 在卖出输出中增加加权价格信息
+                        rise_buy_price_info = f" 加权价={main_account_rise_buy_price:.2f}" if main_account_rise_buy_price > 0 else ""
+                        action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f}{rise_buy_price_info} \u6301\u4ed3{remaining_position}"
                         # 卖出后重置买入档位，允许在更低价格继续追跌买入
                         main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         if main_account_sell_buy_position == 0:
@@ -836,6 +964,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             main_account_ma20_converge_days = 0
                             # reset rise/drop independent prices
                             holding_start_date = None
+                            # 重置低于MA20天数计数器
+                            main_account_below_ma20_days = 0
+                            main_account_extreme_lock_active = False
+                            main_account_extreme_peak_price_atr = None
+                            main_account_extreme_converge_days = 0
                         else:
                             # reset rise/drop independent prices
                             if stop_loss_type in ('rise', 'ma20'):
@@ -848,11 +981,16 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 main_account_had_rise_entry_in_cycle = False
                                 main_account_prev_distance_to_ma20 = None
                                 main_account_ma20_converge_days = 0
+                                # 重置低于MA20天数计数器
+                                main_account_below_ma20_days = 0
                             elif stop_loss_type == 'drop':
                                 # reset rise/drop independent prices
                                 main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                                 main_account_drop_buy_price = 0
                                 main_account_drop_anchor_price = close_price  # update drop anchor after sell
+                                main_account_extreme_lock_active = False
+                                main_account_extreme_peak_price_atr = None
+                                main_account_extreme_converge_days = 0
 
         display_position = position
         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -1049,4 +1187,5 @@ def run_backtest(stock_code: str = STOCK_CODE):
 
 if __name__ == "__main__":
     run_backtest()
+
 
