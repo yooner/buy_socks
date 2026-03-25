@@ -1,4 +1,5 @@
-﻿"""
+﻿# -*- coding: utf-8 -*-
+"""
 波动率策略 - 基于波动率变化的交易策略
 买入：条件A(波动率连续向0靠近)、条件B(波动率从负变正)
 卖出：波动率降低至前一天97%以下
@@ -81,13 +82,13 @@ ENABLE_MAIN_ACCOUNT_UPTREND_DYNAMIC_UNLOCK = True
 MAIN_ACCOUNT_UPTREND_UNLOCK_CONVERGE_DAYS = 2
 MAIN_ACCOUNT_UPTREND_UNLOCK_EPS = 0.001
 # 买入A止盈：极度远离MA20时锁定止盈（价ATR倍阈值）
-MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR = 4.0
+MAIN_ACCOUNT_TAKE_PROFIT_EXTREME_LOCK_PRICE_ATR = 4
 # 区间交易卖出：极度远离MA20时锁定（适用于追涨/补跌）
 ENABLE_MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK = True
-MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK_PRICE_ATR = 4.0
+MAIN_ACCOUNT_SELL_BUY_EXTREME_LOCK_PRICE_ATR = 4
 # 区间交易极度买入：空仓且极度符合条件时全仓买入
 ENABLE_MAIN_ACCOUNT_EXTREME_BUY_WHEN_EMPTY = True  # 空仓且价ATR倍 >= 阈值时全仓买入
-MAIN_ACCOUNT_EXTREME_BUY_PRICE_ATR_THRESHOLD = 4.0  # 极度买入价ATR倍阈值
+MAIN_ACCOUNT_EXTREME_BUY_PRICE_ATR_THRESHOLD = 4  # 极度买入价ATR倍阈值
 MAIN_ACCOUNT_EXTREME_BUY_CONSECUTIVE_DAYS = 1  # 极度买入需要连续满足的天数
 
 # 追涨买入止损阈值：当追涨买入的仓位跌幅超过该阈值时直接卖出
@@ -99,8 +100,22 @@ MAIN_ACCOUNT_BELOW_MA20_THRESHOLD = -0.04  # 低于MA20的阈值（默认3%）
 MAIN_ACCOUNT_BELOW_MA20_EMERGENCY_THRESHOLD = -0.08  # 紧急卖出阈值（默认8%，超过直接卖出）
 
 # 买入A延迟买入开关
-ENABLE_BUY_A_DELAYED = False  # 是否启用延迟买入
-BUY_A_ATR_MULTIPLIER_THRESHOLD = -0.50  # 价ATR倍数阈值，用于延迟买入判断
+ENABLE_BUY_A_DELAYED = True  # 是否启用延迟买入
+# 延迟买入规则参数（按待买A标记当天的价ATR倍分档）
+BUY_A_DELAYED_MARK_DIRECT_ATR = 0.0  # 标记日 > 0：直接买入
+BUY_A_DELAYED_MARK_L1_MIN_ATR = -1.0  # 标记日 >= -1 且 <=0
+BUY_A_DELAYED_MARK_L2_MIN_ATR = -1.8  # 标记日 >= -1.8 且 < -1
+# L1执行：标记日在[-1, 0]，当日价ATR < L1触发阈值即买入
+BUY_A_DELAYED_EXEC_L1_TRIGGER_ATR = -1.45
+# L2执行：标记日在[-1.8, -1)，当日价ATR < -3当天买；否则累计2天< -2再买
+BUY_A_DELAYED_EXEC_L2_ACCUM_ATR = -2.0
+BUY_A_DELAYED_EXEC_L2_FORCE_ATR = -3.0
+BUY_A_DELAYED_EXEC_L2_HIT_DAYS = 2
+# L3执行：标记日 < -1.8，需要连续两天价ATR > -0.5再买
+BUY_A_DELAYED_EXEC_L3_REBOUND_ATR = -0.5
+BUY_A_DELAYED_EXEC_L3_REBOUND_DAYS = 2
+# 任意分档只要当日价ATR > 0，直接买入
+BUY_A_DELAYED_EXEC_ANY_BREAKOUT_ATR = 0.0
 
 # 追跌买入止损阈值：当追跌买入的三档都买入后，跌幅超过该阈值时直接卖出
 MAIN_ACCOUNT_DROP_STOP_LOSS_PCT = -0.10  # 跌幅超过10%时止损卖出
@@ -110,7 +125,7 @@ MAIN_ACCOUNT_DROP_STOP_LOSS_REQUIRE_ALL_LEVELS = True  # 是否需要三档都�
 
 # 买入A与卖出A之间的止盈机制
 ENABLE_MAIN_ACCOUNT_TAKE_PROFIT = True  # 是否启用止盈机制
-MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [0.15, 0.23, 0.30]  # 止盈档位（涨幅10%/20%/30%/40%触发）
+MAIN_ACCOUNT_TAKE_PROFIT_LEVELS = [2, 3, 4]  # 止盈档位（价ATR倍数2/3/4触发）
 MAIN_ACCOUNT_TAKE_PROFIT_RATIOS = [0.20, 0.40, 0.40]  # 对应卖出仓位比例（卖出20%/20%/30%/400%）
 
 
@@ -223,6 +238,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
     
     # 买入A与卖出A之间的止盈机制状态变量
     take_profit_levels_triggered = [False] * len(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_TAKE_PROFIT else []
+    take_profit_ref_price = 0.0  # 止盈参考价（用于相对当前持仓参考价止盈）
     a_take_profit_first_triggered = False
     a_take_profit_prev_distance_to_ma20 = None
     a_take_profit_converge_days = 0
@@ -233,6 +249,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
     # 买入A延迟买入状态变量
     buy_a_delayed_pending = False  # 是否有待买A
     buy_a_pending_price = 0.0  # 待买A标记价格
+    buy_a_pending_mark_price_atr = 0.0  # 待买A标记当天的价ATR倍
+    buy_a_below_ma20_atr_hit_count = 0  # 待买A期间，L2累计命中次数
+    buy_a_rebound_hit_count = 0  # 待买A期间，L3反弹连续命中次数
     buy_a_marked = False  # 是否已经标记了待买A
     
     # 主账户在卖出A与买入A之间的分批买入卖出状态变量
@@ -349,7 +368,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
             # 检查止盈（买入A与卖出A之间）
             take_profit_triggered = False
             take_profit_level = -1
-            if position > 0 and ENABLE_MAIN_ACCOUNT_TAKE_PROFIT and buy_price > 0:
+            if position > 0 and ENABLE_MAIN_ACCOUNT_TAKE_PROFIT and take_profit_ref_price > 0:
                 # 买入A止盈动态解锁：首次止盈后才启用
                 # 同时支持极度远离MA20时锁定止盈，直到场景破坏
                 current_price_atr_multiple = row['价ATR倍'] if pd.notna(row['价ATR倍']) else np.nan
@@ -414,20 +433,25 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         a_take_profit_prev_distance_to_ma20 = None
                         a_take_profit_converge_days = 0
 
-                    profit_pct = (close_price - buy_price) / buy_price
+                    # 计算价ATR倍数
+                    current_price_atr_multiple = 0
+                    if pd.notna(ma20) and ma20 > 0 and pd.notna(df.loc[i, 'ATR']) and df.loc[i, 'ATR'] > 0:
+                        current_price_atr_multiple = (close_price - ma20) / df.loc[i, 'ATR']
+                    
+                    # 遍历止盈档位，检查是否触发止盈
                     for tp_idx, tp_level in enumerate(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS):
-                        if not take_profit_levels_triggered[tp_idx] and profit_pct >= tp_level:
+                        if not take_profit_levels_triggered[tp_idx] and current_price_atr_multiple >= tp_level:
                             take_profit_triggered = True
                             take_profit_level = tp_idx
                             break
-            if position > 0:
-                # 卖出条件：波动率>0且降低，且降至前一天97%以下
-                if volatility > 0 and is_volatility_declining:
-                    volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
-                    if volatility_ratio <= SELL_RATIO_THRESHOLD:
-                        should_sell = True
-                        sell_reason = "比率卖出"
+            # 原始卖出A信号：波动率>0且降低，且降至前一天阈值以下
+            if volatility > 0 and is_volatility_declining:
+                volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
+                if volatility_ratio <= SELL_RATIO_THRESHOLD:
+                    should_sell = True
+                    sell_reason = "比率卖出"
             
+
 
 
             # 卖出逻辑
@@ -450,11 +474,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     
                     position = 0
                     buy_price = 0
-                    # ????????
+                    # 卖出后重置计数器
                     volatility_declining_days = 0
-                    # ????????
+                    # 重置持仓开始日期
                     holding_start_date = None
-                    # ??????
+                    # 重置止盈档位
                     if ENABLE_MAIN_ACCOUNT_TAKE_PROFIT:
                         take_profit_levels_triggered = [False] * len(MAIN_ACCOUNT_TAKE_PROFIT_LEVELS)
 
@@ -464,13 +488,17 @@ def run_backtest(stock_code: str = STOCK_CODE):
                     a_take_profit_extreme_lock_active = False
                     a_take_profit_extreme_peak_distance_to_ma20 = None
                     a_take_profit_extreme_converge_days = 0
+                    take_profit_ref_price = 0.0
                     buy_a_delayed_pending = False
                     buy_a_marked = False
                     buy_a_pending_price = 0.0
+                    buy_a_pending_mark_price_atr = 0.0
+                    buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
                     
-                    # ??????A???A???????????????
+                    # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
                     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
-                        # ???????????
+                        # 设置锚定价格为卖出价格
                         last_anchor_price = sell_price
                         main_account_anchor_index = i
                         main_account_drop_anchor_price = sell_price
@@ -482,9 +510,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_extreme_lock_active = False
                         main_account_extreme_peak_price_atr = None
                         main_account_extreme_converge_days = 0
-                        # ???????????????????
+                        # 记录卖出时的现金作为区间交易的初始资金
                         main_account_initial_cash = cash
-                        # ????????A???A?????????????
+                        # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
                         main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         main_account_sell_buy_position = 0
                         main_account_sell_buy_price = 0
@@ -492,7 +520,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                         main_account_uptrend_sell_levels_triggered = [False] * (len(MAIN_ACCOUNT_UPTREND_SELL_PROFIT_LEVELS) if ENABLE_MAIN_ACCOUNT_UPTREND_SELL_BY_PROFIT else len(MAIN_ACCOUNT_UPTREND_SELL_ATR_MULTIPLIERS))
                         main_account_rise_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_UPTREND_LEVELS)
-                        # ????/???????????
+                        # 重置追涨/追跌的独立加权平均价格
                         main_account_rise_buy_price = 0
                         main_account_rise_buy_shares = 0
                         main_account_drop_buy_price = 0
@@ -523,6 +551,11 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         # 标记该止盈档位已触发
                         take_profit_levels_triggered[take_profit_level] = True
                         a_take_profit_first_triggered = True
+                        if position > 0:
+                            # 止盈后更新参考价，后续止盈相对当前持仓参考价判断
+                            take_profit_ref_price = sell_price
+                        else:
+                            take_profit_ref_price = 0.0
                         if pd.notna(ma20) and ma20 > 0:
                             a_take_profit_prev_distance_to_ma20 = (close_price - ma20) / ma20
                             a_take_profit_converge_days = 0
@@ -554,6 +587,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         buy_a_delayed_pending = True
                         buy_a_marked = True
                         buy_a_pending_price = close_price
+                        buy_a_pending_mark_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0.0
+                        buy_a_below_ma20_atr_hit_count = 0
+                        buy_a_rebound_hit_count = 0
                         action = f"待买A@{close_price:.2f}(基准价标记)"
                         trades.append({
                             'day': day_num,
@@ -592,6 +628,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             trade_count += 1
                             actual_condition_a_buy_count += 1
                             action = f"买入A@{buy_price:.2f}"
+                            take_profit_ref_price = buy_price
                             trades.append({
                                 'day': day_num,
                                 'date': date_str,
@@ -634,11 +671,59 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 if pd.notna(ma20) and ma20 > 0 and pd.notna(df.loc[i, 'ATR']) and df.loc[i, 'ATR'] > 0:
                     price_atr_multiplier = (close_price - ma20) / df.loc[i, 'ATR']
                 can_buy = False
-                if pd.notna(ma20) and ma20 > 0:
-                    if close_price >= ma20:
+                # 待买A期间如果触发原始卖出A信号，则本轮待买失效并重置，避免跨越原有买卖A周期
+                if should_sell:
+                    buy_a_delayed_pending = False
+                    buy_a_marked = False
+                    buy_a_pending_price = 0.0
+                    buy_a_pending_mark_price_atr = 0.0
+                    buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
+                    action = f"待买A失效@{close_price:.2f}(到达卖出A重置)"
+
+                # 任意分档：当日价ATR倍 > 0，直接买入
+                elif price_atr_multiplier > BUY_A_DELAYED_EXEC_ANY_BREAKOUT_ATR:
+                    can_buy = True
+                    buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
+
+                # 标记日 > 0：直接买入
+                elif buy_a_pending_mark_price_atr > BUY_A_DELAYED_MARK_DIRECT_ATR:
+                    can_buy = True
+                    buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
+
+                # 标记日 >= -1 且 <= 0：当日价ATR < -1.5 买入
+                elif buy_a_pending_mark_price_atr >= BUY_A_DELAYED_MARK_L1_MIN_ATR:
+                    if price_atr_multiplier < BUY_A_DELAYED_EXEC_L1_TRIGGER_ATR:
                         can_buy = True
-                    elif price_atr_multiplier >= BUY_A_ATR_MULTIPLIER_THRESHOLD:
+                    buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
+
+                # 标记日 < -1 且 >= -1.8：累计两天 < -2 或当日 < -3 买入
+                elif buy_a_pending_mark_price_atr >= BUY_A_DELAYED_MARK_L2_MIN_ATR:
+                    if price_atr_multiplier < BUY_A_DELAYED_EXEC_L2_FORCE_ATR:
                         can_buy = True
+                        buy_a_below_ma20_atr_hit_count = 0
+                    elif price_atr_multiplier < BUY_A_DELAYED_EXEC_L2_ACCUM_ATR:
+                        buy_a_below_ma20_atr_hit_count += 1
+                        if buy_a_below_ma20_atr_hit_count >= BUY_A_DELAYED_EXEC_L2_HIT_DAYS:
+                            can_buy = True
+                            buy_a_below_ma20_atr_hit_count = 0
+                    else:
+                        buy_a_below_ma20_atr_hit_count = 0
+                    buy_a_rebound_hit_count = 0
+
+                # 标记日 < -1.8：连续两天价ATR > -0.5 再买入
+                else:
+                    if price_atr_multiplier > BUY_A_DELAYED_EXEC_L3_REBOUND_ATR:
+                        buy_a_rebound_hit_count += 1
+                        if buy_a_rebound_hit_count >= BUY_A_DELAYED_EXEC_L3_REBOUND_DAYS:
+                            can_buy = True
+                            buy_a_rebound_hit_count = 0
+                    else:
+                        buy_a_rebound_hit_count = 0
+                    buy_a_below_ma20_atr_hit_count = 0
                 if can_buy:
                     buy_price = close_price
                     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_sell_buy_position > 0:
@@ -668,6 +753,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         trade_count += 1
                         actual_condition_a_buy_count += 1
                         action = f"买入A@{buy_price:.2f}(由待买A触发)"
+                        take_profit_ref_price = buy_price
                         trades.append({
                             'day': day_num,
                             'date': date_str,
@@ -678,6 +764,9 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         buy_a_delayed_pending = False
                         buy_a_marked = False
                         buy_a_pending_price = 0.0
+                        buy_a_pending_mark_price_atr = 0.0
+                        buy_a_below_ma20_atr_hit_count = 0
+                        buy_a_rebound_hit_count = 0
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
                             main_account_cycle_active = True
                             main_account_initial_cash = cash
@@ -821,10 +910,10 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 holding_start_date = date_str
 
                     if executed_rise_levels:
-                        rise_levels_str = ','.join([f"\u8ffd\u6da8\u4e70{idx+1}" for idx in executed_rise_levels])
+                        rise_levels_str = ",".join([f"追涨买{idx+1}" for idx in executed_rise_levels])
                         # 在买入输出中增加加权价格信息
                         rise_buy_price_info = f" 加权价={main_account_rise_buy_price:.2f}" if main_account_rise_buy_price > 0 else ""
-                        action = f"\u4e3b\u8d26\u6237{rise_levels_str}@{close_price:.2f}{rise_buy_price_info} \u6301\u4ed3{main_account_sell_buy_position}"
+                        action = f"主账户{rise_levels_str}@{close_price:.2f}{rise_buy_price_info} 持仓{main_account_sell_buy_position}"
                         has_buy_today = True
             if close_price < ma20 and drop_anchor_price > 0 and not has_buy_today:
                 executed_drop_levels = []
@@ -876,8 +965,8 @@ def run_backtest(stock_code: str = STOCK_CODE):
                         holding_start_date = date_str
 
                 if executed_drop_levels:
-                    drop_levels_str = ','.join([f"\u4e70{idx + 1}" for idx in executed_drop_levels])
-                    action = f"\u4e3b\u8d26\u6237{drop_levels_str}@{close_price:.2f} \u6301\u4ed3{main_account_sell_buy_position}"
+                    drop_levels_str = ','.join([f"?{idx + 1}" for idx in executed_drop_levels])
+                    action = f"主账户{drop_levels_str}@{close_price:.2f} 持仓{main_account_sell_buy_position}"
                     has_buy_today = True
 
             # 只有当当天没有买入操作时，才执行卖出
@@ -1091,14 +1180,14 @@ def run_backtest(stock_code: str = STOCK_CODE):
                                 triggered_levels = "止损"
                         else:
                             if main_account_had_rise_entry_in_cycle and newly_triggered_levels:
-                                triggered_levels = ",".join([f"\u8ffd\u6da8\u5356{i+1}" for i in newly_triggered_levels])
+                                triggered_levels = ",".join([f"追涨卖{i+1}" for i in newly_triggered_levels])
                             else:
-                                sell_source = "\u8ffd\u6da8" if main_account_had_rise_entry_in_cycle else "\u8ffd\u8dcc"
-                                triggered_levels = ",".join([f"{sell_source}\u5356{i+1}" for i in range(max_triggered_level + 1)])
+                                sell_source = "追涨" if main_account_had_rise_entry_in_cycle else "追跌"
+                                triggered_levels = ",".join([f"{sell_source}?{i+1}" for i in range(max_triggered_level + 1)])
                         remaining_position = main_account_sell_buy_position
                         # 在卖出输出中增加加权价格信息
                         rise_buy_price_info = f" 加权价={main_account_rise_buy_price:.2f}" if main_account_rise_buy_price > 0 else ""
-                        action = f"\u4e3b\u8d26\u6237{triggered_levels}@{close_price:.2f}{rise_buy_price_info} \u6301\u4ed3{remaining_position}"
+                        action = f"主账户{triggered_levels}@{close_price:.2f}{rise_buy_price_info} 持仓{remaining_position}"
                         # 卖出后重置买入档位，允许在更低价格继续追跌买入
                         main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         if main_account_sell_buy_position == 0:
