@@ -81,10 +81,12 @@ MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
 # 爆发买入机制（卖出A与买入A之间）
 ENABLE_MAIN_ACCOUNT_OUTBREAK_BUY = True  # 是否启用爆发买入机制
 MAIN_ACCOUNT_OUTBREAK_BUY_CONSECUTIVE_DAYS = 3  # 价ATR倍连续大于阈值的天数
-MAIN_ACCOUNT_OUTBREAK_BUY_PRICE_ATR_THRESHOLD = 1.5  # 价ATR倍买入阈值
+MAIN_ACCOUNT_OUTBREAK_BUY_PRICE_ATR_THRESHOLD = 1.1  # 价ATR倍买入阈值
 # 爆发卖出配置
-MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS = 5  # 计算最高价的周期（默认3日，可设置为5日等）
+MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS = 4  # 计算最高价的周期（默认5日，可设置为3日等）
 MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD = 0.07  # 最高价下降超过该比例才卖出（防止小幅波动）
+MAIN_ACCOUNT_OUTBREAK_SELL_DROP_THRESHOLD = -0.10  # 收盘价与N日最高价差距阈值，小于该值卖出（默认-10%）
+MAIN_ACCOUNT_OUTBREAK_SELL_PREV_DAY_RATIO = 0.91  # 单日跌幅阈值，收盘价低于前一天该比例则卖出（默认0.96即跌幅4%）
 
 # 主账户区间交易：上涨场景分批买入（参考outbreak的趋势确认思路）
 ENABLE_MAIN_ACCOUNT_UPTREND_BUY = True
@@ -1337,19 +1339,46 @@ def run_backtest(stock_code: str = STOCK_CODE):
                 
                 # 爆发买入锁定：当爆发买入激活时，只检查爆发卖出条件，跳过其他卖出机制
                 if main_account_outbreak_buy_active:
-                    # 检查爆发买入卖出条件：N日最高价下降超过阈值才卖出（防止小幅波动）
+                    # 检查爆发买入卖出条件（三条件机制，谁先到先卖出）
                     high_col = f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高'
                     current_high = row[high_col] if pd.notna(row[high_col]) else close_price
+                    
+                    # 条件A：N日最高价没有创新高（即当前最高价 <= 记录的最高价）
+                    # 条件B：收盘价与N日最高价的差距超过阈值
+                    # 条件C：价格低于前一天的设定阈值（单日大幅下跌）
+                    
                     if current_high > main_account_outbreak_sell_high:
                         # 创新高，更新N日最高价
                         main_account_outbreak_sell_high = current_high
-                    elif main_account_outbreak_sell_high > 0:
-                        # 计算N日最高价下降比例
-                        drop_pct = (main_account_outbreak_sell_high - current_high) / main_account_outbreak_sell_high
-                        if drop_pct > MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD:
-                            # 下降超过阈值，触发卖出
+                    
+                    # 计算三个条件（只要之前有过最高价记录就可以计算）
+                    outbreak_sell_reason = ''  # 记录触发条件
+                    if main_account_outbreak_sell_high > 0:
+                        # 条件A：N日最高价下降比例（相对于历史最高）
+                        high_drop_pct = (main_account_outbreak_sell_high - current_high) / main_account_outbreak_sell_high
+                        condition_a = high_drop_pct > MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD
+                        
+                        # 条件B：收盘价与N日最高价的差距
+                        price_drop_pct = (close_price - current_high) / current_high if current_high > 0 else 0
+                        condition_b = price_drop_pct < MAIN_ACCOUNT_OUTBREAK_SELL_DROP_THRESHOLD
+                        
+                        # 条件C：单日跌幅超过阈值（收盘价 < 前一天收盘价 * 阈值）
+                        prev_close = df.iloc[i-1]['收盘'] if i > 0 else close_price
+                        condition_c = close_price < prev_close * MAIN_ACCOUNT_OUTBREAK_SELL_PREV_DAY_RATIO
+                        
+                        # 任一条件满足即触发卖出，并记录触发条件
+                        if condition_a or condition_b or condition_c:
                             stop_loss_triggered = True
                             stop_loss_type = 'outbreak'
+                            # 记录触发的条件（可能有多个）
+                            reasons = []
+                            if condition_a:
+                                reasons.append('A')
+                            if condition_b:
+                                reasons.append('B')
+                            if condition_c:
+                                reasons.append('C')
+                            outbreak_sell_reason = '+'.join(reasons)
                 else:
                     # 检查追涨止损
                     if main_account_had_rise_entry_in_cycle and main_account_rise_buy_price > 0:
@@ -1510,7 +1539,7 @@ def run_backtest(stock_code: str = STOCK_CODE):
                             elif stop_loss_type == 'drop':
                                 triggered_levels = "止损(追跌)"
                             elif stop_loss_type == 'outbreak':
-                                triggered_levels = "爆发卖出"
+                                triggered_levels = f"爆发卖出({outbreak_sell_reason})"
                             else:
                                 triggered_levels = "止损"
                         else:

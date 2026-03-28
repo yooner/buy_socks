@@ -154,8 +154,8 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
 
     columns.append('gittag')
 
-    df = pd.DataFrame(columns=columns)
-
+    # 收集所有行数据，然后一次性创建DataFrame（避免pd.concat警告）
+    rows = []
     for r in results:
         row = {
             '编号': str(r['stock_code']),
@@ -166,8 +166,9 @@ def save_results_to_excel(results: List[Dict], excel_file: str, strategy_key: st
             row[f'{year}年收益率'] = r.get('yearly_returns', {}).get(year, 0) / 100 if r.get('yearly_returns') else 0
 
         row['gittag'] = r.get('gittag', '')
+        rows.append(row)
 
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df = pd.DataFrame(rows, columns=columns)
 
     df['编号'] = df['编号'].astype(str)
 
