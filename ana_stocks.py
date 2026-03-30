@@ -17,7 +17,7 @@ INITIAL_CAPITAL_EXPORT = 100000
 CACHE_DAYS = 365 * 10  # 缓存10年数据
 BACKTEST_YEARS = 10  # 回测默认5年（所有程序统一使用）
 
-END_DATE = pd.to_datetime("20260324")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
+END_DATE = pd.to_datetime("20260330")  # 结束日期，None表示当前日期，也可以设置为 "20250101" 格式
 START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 
 # 回测日期范围配置（可选，用于指定回测区间，不影响缓存）

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+﻿﻿﻿﻿# -*- coding: utf-8 -*-
 """
 波动率策略 - 基于波动率变化的交易策略
 买入：条件A(波动率连续向0靠近)、条件B(波动率从负变正)
@@ -56,11 +56,14 @@ ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING = True  # 设置为True启用：主账户�
 # 主账户区间交易分批买入配置
 ENABLE_MAIN_ACCOUNT_BUY_BY_ATR = True  # 是否启用基于价ATR倍数的买入（False则使用基于跌幅的买入）
 # 基于跌幅的买入配置
-MAIN_ACCOUNT_BUY_LEVELS = [-0.04, -0.08, -0.13]  # 买入触发跌幅（-4%, -8%, -13%）
+MAIN_ACCOUNT_BUY_LEVELS = [-0.15, -0.20]  # 买入触发跌幅（-4%, -8%, -13%）
 # 基于价ATR倍数的买入配置
-MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.0, -3.0, -4.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
-# 买入比例配置（两种方式共用）
-MAIN_ACCOUNT_BUY_RATIOS = [0.20, 0.30, 0.40]      # 对应买入比例（20%, 30%, 50%）
+MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.1, -3.0, -4.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
+# 买入比例配置
+# 基于价ATR倍数的买入比例配置
+MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.20, 0.30, 0.40]      # 对应买入比例（20%, 30%, 50%）
+# 基于跌幅的买入比例配置
+MAIN_ACCOUNT_BUY_DROP_RATIOS = [0.40, 0.60]      # 对应买入比例（20%, 30%, 50%）
 
 # 主账户区间交易分批卖出配置
 # 基于价ATR倍数的卖出配置（对应基于价ATR倍数的买入）
@@ -83,6 +86,14 @@ MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD = 0.07  # 最高价下降超过该比例才
 MAIN_ACCOUNT_OUTBREAK_SELL_DROP_THRESHOLD = -0.10  # 收盘价与N日最高价差距阈值，小于该值卖出（默认-10%）
 MAIN_ACCOUNT_OUTBREAK_SELL_PREV_DAY_RATIO = 0.91  # 单日跌幅阈值，收盘价低于前一天该比例则卖出（默认0.96即跌幅4%）
 MAIN_ACCOUNT_OUTBREAK_SELL_HOLDING_HIGH_THRESHOLD = 0.10  # 收盘价低于持仓期间最高价的阈值，超过该比例卖出（默认7%）
+MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_MA20_CONDITION = True  # 是否启用跌破MA20的卖出条件（条件E）
+
+# 爆发模式止盈卖出配置
+ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT = False  # 是否启用爆发模式止盈卖出
+MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS = [2, 3, 4, 5, 6]  # 价ATR倍数档位[2,3,4,5,6]
+MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_COEFS = [0.20, 0.30, 0.40, 0.50, 0.60]  # 止盈系数[20%,30%,40%,50%,60%]
+MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_RATIOS = [0.20, 0.30, 0.40, 0.50, 1.0]  # 卖出比例[20%,30%,40%,50%,100%]
+MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_DISABLE_THRESHOLD = 2.0  # 买入时价ATR倍数超过该阈值则不开启止盈模式
 
 # 买入A延迟买入开关
 ENABLE_BUY_A_DELAYED = True  # 是否启用延迟买入
@@ -252,18 +263,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     
     # 主账户在卖出A与买入A之间的分批买入卖出状态变量
     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
-        # 根据开关选择买入触发方式对应的数组长度
-        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)  # 主账户卖出A与买入A之间的买入档位
-        else:
-            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)  # 主账户卖出A与买入A之间的买入档位
+        # 两种买入模式的档位状态（并行工作）
+        main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)  # 基于价ATR倍数的买入档位
+        main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)  # 基于跌幅的买入档位
         main_account_sell_buy_position = 0  # 主账户在卖出A与买入A之间的持仓
         main_account_sell_buy_price = 0  # 主账户在卖出A与买入A之间的加权平均买入价格
-        # 根据买入方式选择对应的卖出配置长度
-        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)  # 主账户卖出A与买入A之间的卖出档位
-        else:
-            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)  # 主账户卖出A与买入A之间的卖出档位
+        # 卖出档位（只使用ATR卖出模式）
+        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)  # 卖出档位
         main_account_drop_anchor_price = 0
         main_account_initial_cash = 0  # 主账户区间交易的初始资金（卖出时的现金）
         # 爆发买入机制状态变量
@@ -271,10 +277,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         main_account_outbreak_buy_active = False  # 是否处于爆发买入持仓状态
         main_account_outbreak_buy_price = 0  # 爆发买入价格
         main_account_outbreak_sell_high = 0  # 爆发买入后的N日最高价
+        main_account_outbreak_take_profit_enabled = False  # 当前爆发买入是否启用止盈模式
+        # 爆发模式止盈卖出状态变量
+        main_account_outbreak_take_profit_levels_unlocked = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)  # 各止盈档位是否已解锁
+        main_account_outbreak_take_profit_levels_sold = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)  # 各止盈档位是否已卖出
         # 持仓期间最高价（适用于所有持仓类型：主仓、区间交易、爆发买入等）
         main_account_holding_high = 0
     else:
-        main_account_sell_buy_levels_triggered = []
+        main_account_sell_buy_levels_triggered_atr = []
+        main_account_sell_buy_levels_triggered_drop = []
         main_account_sell_buy_position = 0
         main_account_sell_buy_price = 0
         main_account_sell_sell_levels_triggered = []
@@ -285,6 +296,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         main_account_outbreak_buy_active = False
         main_account_outbreak_buy_price = 0
         main_account_outbreak_sell_high = 0  # 爆发买入后的N日最高价
+        main_account_outbreak_take_profit_enabled = False  # 当前爆发买入是否启用止盈模式
+        # 爆发模式止盈卖出状态变量
+        main_account_outbreak_take_profit_levels_unlocked = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)  # 各止盈档位是否已解锁
+        main_account_outbreak_take_profit_levels_sold = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)  # 各止盈档位是否已卖出
         # 持仓期间最高价（适用于所有持仓类型：主仓、区间交易、爆发买入等）
         main_account_holding_high = 0
 
@@ -400,18 +415,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 记录卖出时的现金作为区间交易的初始资金
                         main_account_initial_cash = cash
                         # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
-                        # 根据开关选择买入触发方式对应的数组长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                        else:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                        # 重置两种买入模式的档位
+                        main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         main_account_sell_buy_position = 0
                         main_account_sell_buy_price = 0
-                        # 根据买入方式选择对应的卖出配置长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                        else:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                        # 重置卖出档位
+                        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
             # 更新前一天的波动率
             prev_volatility = volatility
 
@@ -465,16 +475,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             trade_count += 1
                             main_account_sell_buy_position = 0
                             main_account_sell_buy_price = 0
-                            # 根据开关选择买入触发方式对应的数组长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                        else:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                            # 根据买入方式选择对应的卖出配置长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                        else:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                            # 重置两种买入模式的档位
+                        main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                        # 重置卖出档位
+                        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                         new_position = int(cash / buy_price / 100) * 100
                         if new_position >= 100:
                             position = new_position
@@ -492,16 +497,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
                                 main_account_initial_cash = cash
                                 main_account_drop_anchor_price = buy_price
-                                # 根据开关选择买入触发方式对应的数组长度
-                                if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                                    main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                                else:
-                                    main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                                # 根据买入方式选择对应的卖出配置长度
-                                if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                                    main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                                else:
-                                    main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                                # 重置两种买入模式的档位
+                                main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                                main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                                # 重置卖出档位
+                                main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                                 main_account_sell_buy_position = 0
                                 main_account_sell_buy_price = 0
                             volatility_declining_days = 0
@@ -568,16 +568,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         trade_count += 1
                         main_account_sell_buy_position = 0
                         main_account_sell_buy_price = 0
-                        # 根据开关选择买入触发方式对应的数组长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                        else:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                        # 根据买入方式选择对应的卖出配置长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                        else:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                        # 重置两种买入模式的档位
+                        main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                        # 重置卖出档位
+                        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                     new_position = int(cash / buy_price / 100) * 100
                     if new_position >= 100:
                         position = new_position
@@ -599,18 +594,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
                             main_account_initial_cash = cash
                             main_account_drop_anchor_price = buy_price
-                            # 根据开关选择买入触发方式对应的数组长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                        else:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                            # 根据买入方式选择对应的卖出配置长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
+                            # 重置两种买入模式的档位
+                            main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                            main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                            # 重置卖出档位
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                        else:
-                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
-                        main_account_sell_buy_position = 0
-                        main_account_sell_buy_price = 0
+                            main_account_sell_buy_position = 0
+                            main_account_sell_buy_price = 0
                         volatility_declining_days = 0
                         if holding_start_date is None:
                             holding_start_date = date_str
@@ -643,6 +633,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         main_account_outbreak_sell_high = row[high_col] if pd.notna(row[high_col]) else close_price
                         # 初始化持仓期间最高价为买入价格
                         main_account_holding_high = close_price
+                        # 判断当前价ATR倍数，决定是否启用止盈模式
+                        buy_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+                        if buy_price_atr <= MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_DISABLE_THRESHOLD:
+                            main_account_outbreak_take_profit_enabled = True
+                        else:
+                            main_account_outbreak_take_profit_enabled = False
+                        # 重置爆发模式止盈卖出档位状态
+                        main_account_outbreak_take_profit_levels_unlocked = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)
+                        main_account_outbreak_take_profit_levels_sold = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)
                         trade_count += 1
                         trades.append({
                             'day': day_num,
@@ -680,8 +679,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if pd.notna(ma20) and ma20 > 0 and pd.notna(df.loc[i, 'ATR']) and df.loc[i, 'ATR'] > 0:
                         price_atr_multiplier = (close_price - ma20) / df.loc[i, 'ATR']
                     
+                    # ========================================
+                    # 模式1: 基于价ATR倍数的买入（波动率条件触发）
+                    # ========================================
                     for drop_idx, level in enumerate(MAIN_ACCOUNT_BUY_ATR_LEVELS):
-                        if main_account_sell_buy_levels_triggered[drop_idx]:
+                        if main_account_sell_buy_levels_triggered_atr[drop_idx]:
                             continue
                         # 基于价ATR倍数的触发条件（互斥区间）
                         # 买1: -3 < 价ATR倍 <= -2
@@ -696,7 +698,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         else:
                             continue
 
-                        ratio = MAIN_ACCOUNT_BUY_RATIOS[drop_idx]
+                        ratio = MAIN_ACCOUNT_BUY_ATR_RATIOS[drop_idx]
                         buy_amount = main_account_initial_cash * ratio
                         buy_amount = min(buy_amount, cash)
                         new_position = int(buy_amount / close_price / 100) * 100
@@ -721,72 +723,120 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             'action': '买入',
                             'price': close_price,
                             'shares': new_position,
-                            'level': drop_idx + 1
+                            'level': drop_idx + 1,
+                            'type': 'ATR买入'
                         })
-                        main_account_sell_buy_levels_triggered[drop_idx] = True
-                        executed_drop_levels.append(drop_idx)
+                        main_account_sell_buy_levels_triggered_atr[drop_idx] = True
+                        executed_drop_levels.append(f"ATR买{drop_idx + 1}")
                         # 记录持仓开始日期（区间交易首次买入）
                         if holding_start_date is None:
                             holding_start_date = date_str
-                else:
-                    # 基于跌幅的买入
-                    for drop_idx, level in enumerate(MAIN_ACCOUNT_BUY_LEVELS):
-                        if main_account_sell_buy_levels_triggered[drop_idx]:
-                            continue
-                        if price_drop_pct > level:
-                            continue
+                
+                # ========================================
+                # 模式2: 基于跌幅的买入（低比例补跌）
+                # ========================================
+                for drop_idx, level in enumerate(MAIN_ACCOUNT_BUY_LEVELS):
+                    if main_account_sell_buy_levels_triggered_drop[drop_idx]:
+                        continue
+                    if price_drop_pct > level:
+                        continue
 
-                        ratio = MAIN_ACCOUNT_BUY_RATIOS[drop_idx]
-                        buy_amount = main_account_initial_cash * ratio
-                        buy_amount = min(buy_amount, cash)
-                        new_position = int(buy_amount / close_price / 100) * 100
-                        if new_position < 100 or cash < new_position * close_price:
-                            continue
+                    ratio = MAIN_ACCOUNT_BUY_DROP_RATIOS[drop_idx]
+                    buy_amount = main_account_initial_cash * ratio
+                    buy_amount = min(buy_amount, cash)
+                    new_position = int(buy_amount / close_price / 100) * 100
+                    if new_position < 100 or cash < new_position * close_price:
+                        continue
 
-                        cost = new_position * close_price
-                        cash -= cost
-                        # 更新总持仓的加权平均价格
-                        if main_account_sell_buy_position == 0:
-                            main_account_sell_buy_price = close_price
-                        else:
-                            main_account_sell_buy_price = (
-                                main_account_sell_buy_price * main_account_sell_buy_position
-                                + close_price * new_position
-                            ) / (main_account_sell_buy_position + new_position)
+                    cost = new_position * close_price
+                    cash -= cost
+                    # 更新总持仓的加权平均价格
+                    if main_account_sell_buy_position == 0:
+                        main_account_sell_buy_price = close_price
+                    else:
+                        main_account_sell_buy_price = (
+                            main_account_sell_buy_price * main_account_sell_buy_position
+                            + close_price * new_position
+                        ) / (main_account_sell_buy_position + new_position)
 
-                        main_account_sell_buy_position += new_position
-                        trade_count += 1
-                        trades.append({
-                            'day': day_num,
-                            'date': date_str,
-                            'action': '买入',
-                            'price': close_price,
-                            'shares': new_position,
-                            'level': drop_idx + 1
-                        })
-                        main_account_sell_buy_levels_triggered[drop_idx] = True
-                        executed_drop_levels.append(drop_idx)
-                        # 记录持仓开始日期（区间交易首次买入）
-                        if holding_start_date is None:
-                            holding_start_date = date_str
+                    main_account_sell_buy_position += new_position
+                    trade_count += 1
+                    trades.append({
+                        'day': day_num,
+                        'date': date_str,
+                        'action': '买入',
+                        'price': close_price,
+                        'shares': new_position,
+                        'level': drop_idx + 1,
+                        'type': '跌幅买入'
+                    })
+                    main_account_sell_buy_levels_triggered_drop[drop_idx] = True
+                    executed_drop_levels.append(f"跌幅买{drop_idx + 1}")
+                    # 记录持仓开始日期（区间交易首次买入）
+                    if holding_start_date is None:
+                        holding_start_date = date_str
 
                 if executed_drop_levels:
-                    drop_levels_str = ','.join([f"买{idx + 1}" for idx in executed_drop_levels])
+                    drop_levels_str = ','.join(executed_drop_levels)
                     action = f"主账户{drop_levels_str}@{close_price:.2f} 持仓{main_account_sell_buy_position}"
                     has_buy_today = True
-                    # 重置卖出档位标记
-                    if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                    else:
-                        main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                    # 重置两种卖出档位标记
+                    main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
 
             # 只有当当天没有买入操作时，才执行卖出
             if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0 and not has_buy_today:
                 # 检查是否触发爆发卖出
                 stop_loss_triggered = False
+                take_profit_triggered = False  # 止盈卖出触发标记
+                take_profit_sell_shares = 0  # 止盈卖出股数
+                take_profit_levels_triggered = []  # 触发的止盈档位
                 
-                # 爆发买入锁定：当爆发买入激活时，只检查爆发卖出条件，跳过其他卖出机制
+                # 爆发买入锁定：当爆发买入激活时，只检查爆发卖出条件和止盈卖出条件，跳过其他卖出机制
                 if main_account_outbreak_buy_active:
+                    current_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+                    
+                    # ========================================
+                    # 爆发模式止盈卖出逻辑
+                    # 逻辑：价ATR倍数达到档位即解锁，当价格达到最高已解锁档位的止盈价时，
+                    # 一次性卖出该档位的比例（跳过中间档位）
+                    # 注意：只有当买入时价ATR倍数低于阈值且启用了止盈模式时才执行
+                    # ========================================
+                    if ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT and main_account_outbreak_take_profit_enabled:
+                        # 1. 检查并解锁止盈档位（当价ATR倍达到对应档位时解锁）
+                        highest_unlocked_level = -1
+                        for level_idx in range(len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)):
+                            if not main_account_outbreak_take_profit_levels_unlocked[level_idx]:
+                                if current_price_atr >= MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS[level_idx]:
+                                    main_account_outbreak_take_profit_levels_unlocked[level_idx] = True
+                            # 记录最高已解锁档位
+                            if main_account_outbreak_take_profit_levels_unlocked[level_idx]:
+                                highest_unlocked_level = level_idx
+                        
+                        # 2. 检查最高已解锁档位是否达到止盈条件
+                        if highest_unlocked_level >= 0 and not main_account_outbreak_take_profit_levels_sold[highest_unlocked_level]:
+                            # 计算最高已解锁档位的止盈价格
+                            take_profit_price = main_account_outbreak_buy_price * (1 + MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_COEFS[highest_unlocked_level])
+                            if close_price >= take_profit_price:
+                                # 达到止盈条件，一次性卖出最高已解锁档位及所有更低未卖出的档位
+                                for level_idx in range(highest_unlocked_level + 1):
+                                    if not main_account_outbreak_take_profit_levels_sold[level_idx]:
+                                        main_account_outbreak_take_profit_levels_sold[level_idx] = True
+                                        take_profit_levels_triggered.append(level_idx)
+                        
+                        # 3. 计算止盈卖出总股数
+                        if take_profit_levels_triggered:
+                            # 取最高档位的卖出比例（因为是一次性卖出到最高档位）
+                            highest_triggered_level = max(take_profit_levels_triggered)
+                            total_sell_ratio = MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_RATIOS[highest_triggered_level]
+                            take_profit_sell_shares = int(main_account_sell_buy_position * total_sell_ratio)
+                            take_profit_sell_shares = min(take_profit_sell_shares, main_account_sell_buy_position)
+                            if take_profit_sell_shares > 0:
+                                take_profit_triggered = True
+                    
+                    # ========================================
+                    # 爆发模式止损卖出逻辑（原有逻辑）
+                    # 注意：无论止盈是否触发，都需要检查止损条件，因为止盈只是卖出部分仓位
+                    # ========================================
                     # 检查爆发买入卖出条件（三条件机制，谁先到先卖出）
                     high_col = f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高'
                     current_high = row[high_col] if pd.notna(row[high_col]) else close_price
@@ -823,8 +873,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         holding_high_drop_pct = (main_account_holding_high - close_price) / main_account_holding_high if main_account_holding_high > 0 else 0
                         condition_d = holding_high_drop_pct > MAIN_ACCOUNT_OUTBREAK_SELL_HOLDING_HIGH_THRESHOLD
 
+                        # 条件E：收盘价跌破MA20（受开关控制）
+                        condition_e = False
+                        if MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_MA20_CONDITION:
+                            condition_e = close_price < ma20 and pd.notna(ma20)
+
                         # 任一条件满足即触发卖出，并记录触发条件
-                        if condition_a or condition_b or condition_c or condition_d:
+                        if condition_a or condition_b or condition_c or condition_d or condition_e:
                             stop_loss_triggered = True
                             # 记录触发的条件（可能有多个）
                             reasons = []
@@ -836,11 +891,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                                 reasons.append('C')
                             if condition_d:
                                 reasons.append('D')
+                            if condition_e:
+                                reasons.append('E')
                             outbreak_sell_reason = '+'.join(reasons)
 
                 current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
-                # 爆发买入锁定：当爆发买入激活时，跳过正常的档位卖出逻辑
-                can_evaluate_sell = stop_loss_triggered or (not main_account_outbreak_buy_active)
+                # 爆发买入锁定：当爆发买入激活时，只允许多止盈卖出和止损卖出，跳过追跌卖档位逻辑
+                can_evaluate_sell = stop_loss_triggered or take_profit_triggered or (not main_account_outbreak_buy_active)
 
                 if can_evaluate_sell:
                     # 计算基于MA20的价ATR倍数
@@ -848,49 +905,43 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if pd.notna(ma20) and ma20 > 0 and current_atr > 0:
                         ma20_price_atr_multiplier = (close_price - ma20) / current_atr
 
-                    price_atr_multiplier = (close_price - main_account_sell_buy_price) / current_atr if current_atr > 0 else 0
-
-                    # 根据买入方式选择对应的卖出配置
-                    if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                        sell_levels = MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS
-                        sell_trigger_value = ma20_price_atr_multiplier
-                    else:
-                        sell_levels = MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS
-                        sell_trigger_value = price_atr_multiplier
-                    sell_ratios = MAIN_ACCOUNT_SELL_RATIOS
-
+                    # ========================================
+                    # 卖出模式：只使用ATR卖出模式
+                    # ========================================
                     max_triggered_level = -1
                     newly_triggered_levels = []
-                    for sell_idx in range(len(sell_levels) - 1, -1, -1):
-                        if sell_trigger_value >= sell_levels[sell_idx]:
-                            max_triggered_level = sell_idx
-                            break
-
-                    if (not stop_loss_triggered) and max_triggered_level >= 0:
-                        # 追跌买入的卖出档位标记
-                        trigger_cap = min(max_triggered_level + 1, len(main_account_sell_sell_levels_triggered))
-                        for idx in range(trigger_cap):
-                            if not main_account_sell_sell_levels_triggered[idx]:
-                                main_account_sell_sell_levels_triggered[idx] = True
-                                newly_triggered_levels.append(idx)
+                    
+                    # 只有在非爆发买入模式下，才计算卖出档位
+                    if not main_account_outbreak_buy_active:
+                        # 计算ATR卖出档位
+                        for sell_idx in range(len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS) - 1, -1, -1):
+                            if ma20_price_atr_multiplier >= MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS[sell_idx]:
+                                max_triggered_level = sell_idx
+                                break
+                        
+                        if max_triggered_level >= 0:
+                            trigger_cap = min(max_triggered_level + 1, len(main_account_sell_sell_levels_triggered))
+                            for idx in range(trigger_cap):
+                                if not main_account_sell_sell_levels_triggered[idx]:
+                                    main_account_sell_sell_levels_triggered[idx] = True
+                                    newly_triggered_levels.append(idx)
 
                     trade_level = 0
                     # reset rise/drop independent prices
                     if stop_loss_triggered:
-                        # 爆发买入卖出所有仓位
+                        # 爆发买入止损卖出所有仓位
                         sell_shares = main_account_sell_buy_position
                         sell_shares = max(sell_shares, 0)
+                    elif take_profit_triggered:
+                        # 爆发买入止盈卖出
+                        sell_shares = take_profit_sell_shares
+                        sell_shares = max(sell_shares, 0)
                     elif newly_triggered_levels:
-                        step_ratio = sum(sell_ratios[idx] for idx in newly_triggered_levels if idx < len(sell_ratios))
-                        sell_shares = int(main_account_sell_buy_position * step_ratio)
-                        sell_shares = min(sell_shares, main_account_sell_buy_position)
-                        trade_level = newly_triggered_levels[-1] + 1
-                    elif max_triggered_level >= 0:
-                        # 这种情况应该不会发生，因为已经在上面处理了newly_triggered_levels
-                        total_ratio = sum(sell_ratios[:max_triggered_level + 1])
+                        # 计算卖出比例
+                        total_ratio = sum(MAIN_ACCOUNT_SELL_RATIOS[idx] for idx in newly_triggered_levels if idx < len(MAIN_ACCOUNT_SELL_RATIOS))
                         sell_shares = int(main_account_sell_buy_position * total_ratio)
                         sell_shares = min(sell_shares, main_account_sell_buy_position)
-                        trade_level = max_triggered_level + 1
+                        trade_level = newly_triggered_levels[-1] + 1
                     else:
                         sell_shares = 0
                     if sell_shares > 0:
@@ -913,38 +964,39 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         })
                         if stop_loss_triggered:
                             triggered_levels = f"爆发卖出({outbreak_sell_reason})"
+                        elif take_profit_triggered:
+                            # 构建止盈卖出档位描述
+                            level_descs = []
+                            for idx in take_profit_levels_triggered:
+                                level_descs.append(f"止盈档{idx+1}(ATR{MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS[idx]},收益{MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_COEFS[idx]*100:.0f}%)")
+                            triggered_levels = "爆发" + "+".join(level_descs)
                         else:
-                            if newly_triggered_levels:
-                                triggered_levels = ",".join([f"追跌卖{i+1}" for i in newly_triggered_levels])
-                            else:
-                                triggered_levels = ",".join([f"追跌卖{i+1}" for i in range(max_triggered_level + 1)])
+                            # 构建卖出档位描述
+                            triggered_levels = ",".join([f"卖{i+1}" for i in newly_triggered_levels])
                         remaining_position = main_account_sell_buy_position
                         action = f"主账户{triggered_levels}@{close_price:.2f} 持仓{remaining_position}"
                         # 卖出后重置买入档位，允许在更低价格继续追跌买入
-                        # 根据开关选择买入触发方式对应的数组长度
-                        if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                        else:
-                            main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                        # 重置两种买入模式的档位
+                        main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         if main_account_sell_buy_position == 0:
                             main_account_sell_buy_price = 0
-                            # 根据开关选择买入触发方式对应的数组长度
-                            if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                                main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
-                            else:
-                                main_account_sell_buy_levels_triggered = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
-                            # 根据买入方式选择对应的卖出配置长度
-                            if ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                                main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
-                            else:
-                                main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS)
+                            # 重置两种买入模式的档位
+                            main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                            main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
+                            # 重置卖出档位
+                            main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
                             # reset rise/drop independent prices
                             holding_start_date = None
-                        # 重置爆发买入状态
-                        main_account_outbreak_buy_active = False
-                        main_account_outbreak_buy_price = 0
-                        main_account_outbreak_buy_consecutive_days = 0
-                        main_account_outbreak_sell_high = 0  # 重置N日最高价
+                            # 只有当仓位全部卖出时，才重置爆发买入状态
+                            main_account_outbreak_buy_active = False
+                            main_account_outbreak_buy_price = 0
+                            main_account_outbreak_buy_consecutive_days = 0
+                            main_account_outbreak_sell_high = 0  # 重置N日最高价
+                            main_account_outbreak_take_profit_enabled = False  # 重置止盈启用标记
+                            # 重置爆发模式止盈卖出档位状态
+                            main_account_outbreak_take_profit_levels_unlocked = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)
+                            main_account_outbreak_take_profit_levels_sold = [False] * len(MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_ATR_LEVELS)
 
         # 如果持仓全部卖出，重置持仓最高价
         total_position = position + main_account_sell_buy_position
