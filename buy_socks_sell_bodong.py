@@ -47,6 +47,13 @@ def get_output_file_path(base_name="out_put.txt"):
 # 卖出策略全局参数
 SELL_RATIO_THRESHOLD = 0.99999  # 波动率降至前一天97%以下全卖
 
+# 卖出A优化配置：当收盘价高于MA20一定比例时，延迟卖出直到价格回到MA20以下
+ENABLE_SELL_A_DELAYED = True  # 是否启用卖出A延迟卖出功能
+SELL_A_MA20_THRESHOLD_PCT = 0.11  # 收盘价高于MA20该比例时（默认11%），延迟卖出直到价格回到MA20以下
+SELL_A_MA20_SELL_RATIO = 0.97  # 延迟卖出时，价格需低于MA20的该比例才卖出（默认0.97即低于MA20的3%）
+# N日高价卖出条件（使用MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS作为周期）
+SELL_A_HIGH_DROP_RATIO = 0.90  # 收盘价低于N日高价的该比例时卖出（默认0.95即下跌5%）
+
 # 买入条件全局参数
 BUY_DECLINE_DAYS_REQUIRED = 3  # 波动率连续向0靠近所需天数（条件A）
 
@@ -262,6 +269,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     buy_a_below_ma20_atr_hit_count = 0  # 待买A期间，L2累计命中次数
     buy_a_marked = False  # 是否已经标记了待买A
     
+    # 卖出A延迟卖出状态变量
+    sell_a_delayed_pending = False  # 是否有待卖A（当价格高于MA20阈值时延迟卖出）
+    
     # 主账户在卖出A与买入A之间的分批买入卖出状态变量
     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
         # 两种买入模式的档位状态（并行工作）
@@ -376,10 +386,49 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 if volatility_ratio <= SELL_RATIO_THRESHOLD:
                     sell_a_signal_triggered = True
             
+            # 卖出A优化：检查是否高于MA20阈值
             if sell_a_signal_triggered and position > 0:
-                # 未启用延迟卖出，立即全仓卖出
-                should_sell = True
-                sell_reason = "比率卖出"
+                if ENABLE_SELL_A_DELAYED:
+                    # 启用延迟卖出功能
+                    # 计算收盘价与MA20的比例
+                    ma20_ratio = (close_price - ma20) / ma20 if pd.notna(ma20) and ma20 > 0 else 0
+                    if ma20_ratio > SELL_A_MA20_THRESHOLD_PCT and not sell_a_delayed_pending:
+                        # 价格高于MA20阈值，标记为待卖A，延迟卖出
+                        sell_a_delayed_pending = True
+                        action = f"待卖A@{close_price:.2f}(高于MA20 {ma20_ratio*100:.1f}%)"
+                        trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '待卖A',
+                            'price': close_price,
+                            'shares': 0
+                        })
+                    elif sell_a_delayed_pending:
+                        # 待卖A状态，检查两个卖出条件
+                        # 条件1：价格低于MA20的设定比例
+                        condition1 = close_price <= ma20 * SELL_A_MA20_SELL_RATIO
+                        # 条件2：收盘价低于N日高价的设定比例（使用爆发卖出的N日周期配置）
+                        high_col = f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高'
+                        current_high = row[high_col] if pd.notna(row[high_col]) else 0
+                        condition2 = (current_high > 0 and 
+                                     close_price <= current_high * SELL_A_HIGH_DROP_RATIO)
+                        if condition1 or condition2:
+                            should_sell = True
+                            if condition1 and condition2:
+                                sell_reason = "比率卖出(待卖A-MA20且N日高价触发)"
+                            elif condition1:
+                                sell_reason = "比率卖出(待卖A-MA20触发)"
+                            else:
+                                sell_reason = "比率卖出(待卖A-N日高价触发)"
+                            sell_a_delayed_pending = False
+                    elif not sell_a_delayed_pending:
+                        # 未触发延迟卖出条件，正常卖出
+                        should_sell = True
+                        sell_reason = "比率卖出"
+                else:
+                    # 未启用延迟卖出功能，正常卖出
+                    should_sell = True
+                    sell_reason = "比率卖出"
             
             # 卖出逻辑
             if position > 0:
@@ -410,6 +459,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     buy_a_marked = False
                     buy_a_pending_price = 0.0
                     buy_a_below_ma20_atr_hit_count = 0
+                    # 重置卖出A延迟卖出状态
+                    sell_a_delayed_pending = False
 
                     # 主账户在卖出A与买入A之间的分批买入卖出状态变量重置
                     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
@@ -511,8 +562,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                                 main_account_sell_buy_position = 0
                                 main_account_sell_buy_price = 0
                             volatility_declining_days = 0
-                            if holding_start_date is None:
-                                holding_start_date = date_str
+                        # 重置卖出A延迟卖出状态（新买入周期开始）
+                        sell_a_delayed_pending = False
+                        if holding_start_date is None:
+                            holding_start_date = date_str
 
             # 延迟买入执行：仅当允许买入时，才从待买A切换到真正买入A
             if ENABLE_BUY_A_DELAYED and position == 0 and buy_a_delayed_pending:
@@ -598,6 +651,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         buy_a_marked = False
                         buy_a_pending_price = 0.0
                         buy_a_below_ma20_atr_hit_count = 0
+                        # 重置卖出A延迟卖出状态（新买入周期开始）
+                        sell_a_delayed_pending = False
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
                             main_account_initial_cash = cash
                             main_account_drop_anchor_price = buy_price
