@@ -58,10 +58,11 @@ ENABLE_MAIN_ACCOUNT_BUY_BY_ATR = True  # 是否启用基于价ATR倍数的买入
 # 基于跌幅的买入配置
 MAIN_ACCOUNT_BUY_LEVELS = [-0.13, -0.20]  # 买入触发跌幅（-4%, -8%, -13%）
 # 基于价ATR倍数的买入配置
-MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.1, -3.0, -4.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
+MAIN_ACCOUNT_BUY_ATR_LEVELS = [-3.0, -4.0, -5.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
+MAIN_ACCOUNT_BUY_ATR_CONSECUTIVE_DAYS = [2, 1, 1]  # 各档位需要的连续天数（买1需连续3天满足条件，买2买3只需1天）
 # 买入比例配置
 # 基于价ATR倍数的买入比例配置
-MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.10, 0.20, 0.40]      # 对应买入比例（20%, 30%, 50%）
+MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.80, 0.80, 1.0]      # 对应买入比例（20%, 30%, 50%）
 # 基于跌幅的买入比例配置
 MAIN_ACCOUNT_BUY_DROP_RATIOS = [0.40, 0.60]      # 对应买入比例（20%, 30%, 50%）
 
@@ -265,6 +266,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
         # 两种买入模式的档位状态（并行工作）
         main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)  # 基于价ATR倍数的买入档位
+        main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)  # 各档位连续满足条件天数计数
         main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)  # 基于跌幅的买入档位
         main_account_sell_buy_position = 0  # 主账户在卖出A与买入A之间的持仓
         main_account_sell_buy_price = 0  # 主账户在卖出A与买入A之间的加权平均买入价格
@@ -285,6 +287,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         main_account_holding_high = 0
     else:
         main_account_sell_buy_levels_triggered_atr = []
+        main_account_sell_buy_levels_consecutive_days = []
         main_account_sell_buy_levels_triggered_drop = []
         main_account_sell_buy_position = 0
         main_account_sell_buy_price = 0
@@ -417,6 +420,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 重置主账户在卖出A与买入A之间的分批买入卖出状态变量
                         # 重置两种买入模式的档位
                         main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                         main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         main_account_sell_buy_position = 0
                         main_account_sell_buy_price = 0
@@ -477,6 +481,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             main_account_sell_buy_price = 0
                             # 重置两种买入模式的档位
                         main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                         main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         # 重置卖出档位
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
@@ -499,6 +504,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                                 main_account_drop_anchor_price = buy_price
                                 # 重置两种买入模式的档位
                                 main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                                main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                                 main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                                 # 重置卖出档位
                                 main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
@@ -570,6 +576,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         main_account_sell_buy_price = 0
                         # 重置两种买入模式的档位
                         main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                         main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         # 重置卖出档位
                         main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
@@ -596,6 +603,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             main_account_drop_anchor_price = buy_price
                             # 重置两种买入模式的档位
                             main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                            main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                             main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                             # 重置卖出档位
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
@@ -691,13 +699,24 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 买1: -3 < 价ATR倍 <= -2
                         # 买2: -4 < 价ATR倍 <= -3
                         # 买3: 价ATR倍 <= -4
+                        condition_met = False
                         if drop_idx == 0 and (MAIN_ACCOUNT_BUY_ATR_LEVELS[1] < price_atr_multiplier <= MAIN_ACCOUNT_BUY_ATR_LEVELS[0]):
-                            pass
+                            condition_met = True
                         elif drop_idx == 1 and (MAIN_ACCOUNT_BUY_ATR_LEVELS[2] < price_atr_multiplier <= MAIN_ACCOUNT_BUY_ATR_LEVELS[1]):
-                            pass
+                            condition_met = True
                         elif drop_idx == 2 and price_atr_multiplier <= MAIN_ACCOUNT_BUY_ATR_LEVELS[2]:
-                            pass
+                            condition_met = True
+                        
+                        if condition_met:
+                            # 条件满足，增加连续天数计数
+                            main_account_sell_buy_levels_consecutive_days[drop_idx] += 1
                         else:
+                            # 条件不满足，重置连续天数计数
+                            main_account_sell_buy_levels_consecutive_days[drop_idx] = 0
+                            continue
+                        
+                        # 检查是否达到连续天数要求
+                        if main_account_sell_buy_levels_consecutive_days[drop_idx] < MAIN_ACCOUNT_BUY_ATR_CONSECUTIVE_DAYS[drop_idx]:
                             continue
 
                         ratio = MAIN_ACCOUNT_BUY_ATR_RATIOS[drop_idx]
@@ -1010,11 +1029,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 卖出后重置买入档位，允许在更低价格继续追跌买入
                         # 重置两种买入模式的档位
                         main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                        main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                         main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                         if main_account_sell_buy_position == 0:
                             main_account_sell_buy_price = 0
                             # 重置两种买入模式的档位
                             main_account_sell_buy_levels_triggered_atr = [False] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
+                            main_account_sell_buy_levels_consecutive_days = [0] * len(MAIN_ACCOUNT_BUY_ATR_LEVELS)
                             main_account_sell_buy_levels_triggered_drop = [False] * len(MAIN_ACCOUNT_BUY_LEVELS)
                             # 重置卖出档位
                             main_account_sell_sell_levels_triggered = [False] * len(MAIN_ACCOUNT_SELL_ATR_MULTIPLIERS)
@@ -1023,7 +1044,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             # 只有当仓位全部卖出时，才重置爆发买入状态
                             # 条件E（跌破MA20）卖出时，不重置爆发买入状态，防止追高再次买入
                             # 只有当其他条件（A/B/C/D）触发时，才完全重置
-                            is_condition_e_only = outbreak_sell_reason == 'E'
+                            is_condition_e_only = outbreak_sell_reason == 'E' if 'outbreak_sell_reason' in locals() else False
                             if not is_condition_e_only:
                                 main_account_outbreak_buy_active = False
                                 main_account_outbreak_buy_price = 0
