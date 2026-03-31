@@ -56,12 +56,12 @@ ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING = True  # 设置为True启用：主账户�
 # 主账户区间交易分批买入配置
 ENABLE_MAIN_ACCOUNT_BUY_BY_ATR = True  # 是否启用基于价ATR倍数的买入（False则使用基于跌幅的买入）
 # 基于跌幅的买入配置
-MAIN_ACCOUNT_BUY_LEVELS = [-0.15, -0.20]  # 买入触发跌幅（-4%, -8%, -13%）
+MAIN_ACCOUNT_BUY_LEVELS = [-0.13, -0.20]  # 买入触发跌幅（-4%, -8%, -13%）
 # 基于价ATR倍数的买入配置
 MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.1, -3.0, -4.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
 # 买入比例配置
 # 基于价ATR倍数的买入比例配置
-MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.20, 0.30, 0.40]      # 对应买入比例（20%, 30%, 50%）
+MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.10, 0.20, 0.40]      # 对应买入比例（20%, 30%, 50%）
 # 基于跌幅的买入比例配置
 MAIN_ACCOUNT_BUY_DROP_RATIOS = [0.40, 0.60]      # 对应买入比例（20%, 30%, 50%）
 
