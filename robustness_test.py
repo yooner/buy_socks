@@ -1,57 +1,37 @@
 """
-策略鲁棒性测试脚本
+简化版策略测试脚本
 
-测试逻辑：
-1. 遍历 cache 下的每只股票作为初始买入候选
-2. 对每只股票作为起始点进行独立回测
-3. 调用 buy_socks_sell_bodong.py 的 run_backtest 函数进行回测
-4. 比较不同起始点的回测结果，验证策略鲁棒性
+策略逻辑：
+1. 买入条件：价ATR倍数 < -3 时开始标记，等到价ATR倍数 > -3 时买入
+2. 卖出条件（满足任一即卖出）：
+   - 盈利10%
+   - 价ATR倍数 > 3
+   - 亏损10%（止损）
 
-输出：多种回测数据的对比分析
+输出：每次买卖记录
 """
 
 import pandas as pd
 import numpy as np
 import os
-import json
-import random
-import sys
 from glob import glob
 from datetime import datetime
-from collections import defaultdict
-from io import StringIO
 
-# 导入 buy_socks_sell_bodong 的 run_backtest 函数
-from buy_socks_sell_bodong import run_backtest
+# 导入数据获取函数
+from ana_stocks import get_daily_data
 
 # 配置参数
 CACHE_DIR = "./cache"
 INITIAL_CAPITAL = 100000  # 初始资金
 
-# 配置：是否使用随机股票组合测试
-# 如果为 True，每次测试会从所有股票中随机选择 RANDOM_STOCK_COUNT 个股票
-# 如果为 False，使用所有股票进行测试
-ENABLE_RANDOM_STOCK_SELECTION = False
+# 策略参数
+BUY_TRIGGER_ATR = -3.0      # 买入触发：价ATR从 < -3 变为 > -3
+PROFIT_TAKE_PCT = 0.10      # 盈利10%卖出
+STOP_LOSS_PCT = -0.10       # 亏损10%止损
+SELL_TRIGGER_ATR = 3.0      # 价ATR > 3 卖出
 
-# 配置：随机选择的股票数量
-# 例如设置为 10，则每次测试使用 10 只随机股票
-RANDOM_STOCK_COUNT = 40
-
-# 配置：测试轮数
-# 设置为 None 则测试次数等于股票数量
-# 设置为具体数字则只进行指定轮数的测试
-TEST_ROUNDS = None  # 例如: 8, 16, 32 或 None(等于股票数量)
-
-# 配置：指定股票组合测试
-# 如果设置，将只使用这些股票进行测试，忽略随机选择
-# 格式: ['601016', '600063', '000543', ...]
-SPECIFIC_STOCKS = None
-# SPECIFIC_STOCKS = ['302132', '603496', '000543']
-
-# 配置：随机种子
-# 设置为 None 则每次运行结果不同
-# 设置为具体数字则每次运行结果一致（用于复现结果）
-RANDOM_SEED = None  # 例如: 42, 123, 456 或 None(随机)
+# 指定股票组合测试（如果为空，则测试所有股票）
+SPECIFIC_STOCKS = ['302132', '603496', '000543', '000002']
 
 
 def get_all_stock_codes(cache_dir=CACHE_DIR):
@@ -65,313 +45,183 @@ def get_all_stock_codes(cache_dir=CACHE_DIR):
     return sorted(stock_codes)
 
 
-def select_random_stocks(all_stock_codes, num_stocks=10, seed=None):
-    """
-    随机选择股票组合
+def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
+    """准备股票数据，计算技术指标"""
+    df = df.copy()
     
-    Args:
-        all_stock_codes: 所有可用的股票代码列表
-        num_stocks: 需要随机选择的股票数量（默认10个）
-        seed: 随机种子
+    # 按日期从远到近排序
+    df = df.sort_values('date').reset_index(drop=True)
     
-    Returns:
-        随机选择的股票列表
-    """
-    if seed is not None:
-        random.seed(seed)
+    # 计算MA20
+    df['ma20'] = df['收盘'].rolling(window=20, min_periods=20).mean()
     
-    # 如果可用股票不足，返回所有可用股票
-    if len(all_stock_codes) <= num_stocks:
-        selected_stocks = all_stock_codes
-    else:
-        # 随机选择 num_stocks 个股票
-        selected_stocks = random.sample(all_stock_codes, num_stocks)
+    # 计算ATR
+    prev_close = df['收盘'].shift(1)
+    tr1 = df['最高'] - df['最低']
+    tr2 = (df['最高'] - prev_close).abs()
+    tr3 = (df['最低'] - prev_close).abs()
+    df['tr'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df['atr14'] = df['tr'].rolling(window=14, min_periods=14).mean()
     
-    return selected_stocks
+    # 计算价ATR倍数
+    df['价ATR倍'] = ((df['收盘'] - df['ma20']) / df['atr14']).replace([np.inf, -np.inf], np.nan)
+    
+    return df
 
 
-def run_single_stock_backtest(stock_code):
+def run_simple_strategy(stock_code: str):
     """
-    对单只股票运行回测
-    调用 buy_socks_sell_bodong.py 的 run_backtest 函数
+    运行简化策略
     
-    Args:
-        stock_code: 股票代码
-    
-    Returns:
-        dict: 回测结果
+    策略逻辑：
+    1. 买入：价ATR < -3 时标记，等到价ATR > -3 时买入
+    2. 卖出：盈利10% 或 价ATR > 3 或 亏损10%止损
     """
-    print(f"\n{'='*80}")
-    print(f"正在回测股票: {stock_code}")
-    print(f"{'='*80}")
+    # 获取数据
+    df = get_daily_data(stock_code, days=365 * 5 + 100)  # 获取5年数据
     
-    # 捕获标准输出，避免打印过多信息
-    old_stdout = sys.stdout
-    sys.stdout = StringIO()
-    
-    try:
-        # 调用 buy_socks_sell_bodong 的 run_backtest
-        result = run_backtest(stock_code)
-        
-        # 恢复标准输出
-        sys.stdout = old_stdout
-        
-        if result is None:
-            print(f"股票 {stock_code} 回测失败: 数据不足")
-            return None
-        
-        total_return, yearly_returns, trade_info = result
-        
-        # 构建结果字典
-        result_dict = {
-            'stock_code': stock_code,
-            'total_return': total_return,
-            'yearly_returns': yearly_returns,
-            'trades': trade_info.get('trades', []),
-            'final_value': trade_info.get('final_value', INITIAL_CAPITAL),
-            'trade_count': len([t for t in trade_info.get('trades', []) if t.get('action') == '卖出'])
-        }
-        
-        print(f"回测完成: 收益率 {total_return:.2f}%, 交易次数 {result_dict['trade_count']}")
-        
-        return result_dict
-        
-    except Exception as e:
-        # 恢复标准输出
-        sys.stdout = old_stdout
-        print(f"股票 {stock_code} 回测出错: {e}")
-        import traceback
-        traceback.print_exc()
+    if df is None or len(df) < 60:
+        print(f"股票 {stock_code}: 数据不足，跳过")
         return None
-
-
-def run_robustness_test():
-    """
-    运行鲁棒性测试
-    串行地对每只股票运行回测
-    """
-    # 设置随机种子
-    if RANDOM_SEED is not None:
-        random.seed(RANDOM_SEED)
-        print(f"使用随机种子: {RANDOM_SEED}")
     
-    # 获取所有股票代码
-    all_stock_codes = get_all_stock_codes()
-    print(f"发现 {len(all_stock_codes)} 只股票")
+    # 准备数据
+    df = prepare_data(df)
     
-    # 确定要测试的股票列表
-    if SPECIFIC_STOCKS is not None:
-        # 使用指定的股票组合
-        test_stocks = [code for code in SPECIFIC_STOCKS if code in all_stock_codes]
-        print(f"使用指定股票组合: {test_stocks}")
-    elif ENABLE_RANDOM_STOCK_SELECTION:
-        # 随机选择股票
-        test_stocks = select_random_stocks(all_stock_codes, RANDOM_STOCK_COUNT, RANDOM_SEED)
-        print(f"随机选择 {len(test_stocks)} 只股票: {test_stocks}")
-    else:
-        # 使用所有股票
-        test_stocks = all_stock_codes
-        print(f"使用所有 {len(test_stocks)} 只股票进行测试")
+    # 初始化
+    cash = INITIAL_CAPITAL
+    position = 0
+    buy_price = 0
+    trades = []
     
-    # 确定测试轮数
-    num_rounds = TEST_ROUNDS if TEST_ROUNDS is not None else len(test_stocks)
-    num_rounds = min(num_rounds, len(test_stocks))
+    # 状态标记
+    waiting_for_buy = False  # 是否等待买入（价ATR已 < -3）
     
-    print(f"\n开始鲁棒性测试，共 {num_rounds} 轮...")
+    print(f"\n{'='*80}")
+    print(f"股票代码: {stock_code}")
     print(f"{'='*80}")
+    print(f"{'日期':<12} {'操作':<10} {'价格':>10} {'股数':>8} {'盈亏':>12} {'备注':<20}")
+    print("-" * 80)
     
-    # 串行运行回测
+    for i in range(len(df)):
+        row = df.iloc[i]
+        date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10]
+        close_price = row['收盘']
+        price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
+        
+        # 买入逻辑：没有持仓时
+        if position == 0:
+            if not waiting_for_buy:
+                # 等待价ATR < -3
+                if price_atr < BUY_TRIGGER_ATR:
+                    waiting_for_buy = True
+                    print(f"{date_str:<12} {'标记':<10} {close_price:>10.2f} {'0':>8} {'-':>12} 价ATR={price_atr:.2f} < -3")
+            else:
+                # 已经标记，等待价ATR > -3 买入
+                if price_atr > BUY_TRIGGER_ATR:
+                    # 买入
+                    position = int(cash / close_price / 100) * 100
+                    if position >= 100:
+                        buy_price = close_price
+                        cost = position * buy_price
+                        cash -= cost
+                        waiting_for_buy = False
+                        
+                        trades.append({
+                            'date': date_str,
+                            'action': '买入',
+                            'price': buy_price,
+                            'shares': position
+                        })
+                        
+                        print(f"{date_str:<12} {'买入':<10} {buy_price:>10.2f} {position:>8} {'-':>12} 价ATR={price_atr:.2f} > -3")
+        
+        # 卖出逻辑：有持仓时
+        else:
+            current_profit_pct = (close_price - buy_price) / buy_price
+            
+            # 检查卖出条件
+            sell_reason = None
+            
+            # 条件1：盈利10%
+            if current_profit_pct >= PROFIT_TAKE_PCT:
+                sell_reason = f"盈利{current_profit_pct*100:.1f}%"
+            
+            # 条件2：价ATR > 3
+            elif price_atr > SELL_TRIGGER_ATR:
+                sell_reason = f"价ATR={price_atr:.2f} > 3"
+            
+            # 条件3：亏损10%止损
+            elif current_profit_pct <= STOP_LOSS_PCT:
+                sell_reason = f"止损{current_profit_pct*100:.1f}%"
+            
+            # 执行卖出
+            if sell_reason:
+                sell_price = close_price
+                sell_value = position * sell_price
+                profit = (sell_price - buy_price) * position
+                cash += sell_value
+                
+                trades.append({
+                    'date': date_str,
+                    'action': '卖出',
+                    'price': sell_price,
+                    'shares': position,
+                    'profit': profit
+                })
+                
+                print(f"{date_str:<12} {'卖出':<10} {sell_price:>10.2f} {position:>8} {profit:>12,.2f} {sell_reason}")
+                
+                position = 0
+                buy_price = 0
+    
+    # 计算最终收益
+    final_value = cash + position * df.iloc[-1]['收盘'] if position > 0 else cash
+    total_return_pct = (final_value - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    
+    print("-" * 80)
+    print(f"交易次数: {len([t for t in trades if t['action'] == '卖出'])}")
+    print(f"最终市值: {final_value:,.2f}")
+    print(f"总收益率: {total_return_pct:+.2f}%")
+    print(f"{'='*80}\n")
+    
+    return {
+        'stock_code': stock_code,
+        'trades': trades,
+        'final_value': final_value,
+        'total_return_pct': total_return_pct
+    }
+
+
+def main():
+    """主函数"""
+    # 确定要测试的股票
+    if SPECIFIC_STOCKS:
+        test_stocks = SPECIFIC_STOCKS
+        print(f"使用指定股票: {test_stocks}")
+    else:
+        all_stocks = get_all_stock_codes()
+        if not all_stocks:
+            print("没有找到股票数据")
+            return
+        test_stocks = all_stocks[:1]  # 只测试第一只
+        print(f"测试股票: {test_stocks[0]} (共{len(all_stocks)}只，每次测1只)")
+    
+    # 运行测试
     results = []
-    for i, stock_code in enumerate(test_stocks[:num_rounds]):
-        print(f"\n[{i+1}/{num_rounds}] ", end="")
-        result = run_single_stock_backtest(stock_code)
-        if result is not None:
+    for stock_code in test_stocks:
+        result = run_simple_strategy(stock_code)
+        if result:
             results.append(result)
     
-    # 输出统计结果
-    print_results_summary(results)
-    
-    return results
-
-
-def print_results_summary(results):
-    """打印测试结果摘要"""
-    if not results:
-        print("\n没有有效的回测结果")
-        return
-    
-    print("\n" + "="*80)
-    print("鲁棒性测试结果摘要")
-    print("="*80)
-    
-    # 按收益率排序
-    results_sorted = sorted(results, key=lambda x: x['total_return'], reverse=True)
-    
-    # 基本统计
-    returns = [r['total_return'] for r in results]
-    final_values = [r['final_value'] for r in results]
-    trade_counts = [r['trade_count'] for r in results]
-    
-    print(f"\n测试股票数量: {len(results)}")
-    print(f"\n收益率统计:")
-    print(f"  最高: {max(returns):.2f}%")
-    print(f"  最低: {min(returns):.2f}%")
-    print(f"  平均: {np.mean(returns):.2f}%")
-    print(f"  中位数: {np.median(returns):.2f}%")
-    print(f"  标准差: {np.std(returns):.2f}%")
-    
-    print(f"\n最终市值统计:")
-    print(f"  最高: {max(final_values):,.2f}")
-    print(f"  最低: {min(final_values):,.2f}")
-    print(f"  平均: {np.mean(final_values):,.2f}")
-    print(f"  中位数: {np.median(final_values):,.2f}")
-    
-    print(f"\n交易次数统计:")
-    print(f"  最多: {max(trade_counts)}")
-    print(f"  最少: {min(trade_counts)}")
-    print(f"  平均: {np.mean(trade_counts):.1f}")
-    print(f"  中位数: {np.median(trade_counts):.1f}")
-    
-    # 收益率分布
-    print("\n" + "="*80)
-    print("收益率分布")
-    print("="*80)
-    
-    # 定义区间
-    bins = [-float('inf'), -50, -20, -10, 0, 10, 20, 50, float('inf')]
-    labels = ['<-50%', '-50~-20%', '-20~-10%', '-10~0%', '0~10%', '10~20%', '20~50%', '>50%']
-    
-    distribution = defaultdict(int)
-    for r in returns:
-        for i, (low, high) in enumerate(zip(bins[:-1], bins[1:])):
-            if low <= r < high:
-                distribution[labels[i]] += 1
-                break
-    
-    for label in labels:
-        count = distribution[label]
-        percentage = count / len(results) * 100
-        bar = '█' * int(percentage / 2)
-        print(f"{label:<10} {count:>3} ({percentage:>5.1f}%) {bar}")
-    
-    # 年度收益统计
-    print("\n" + "="*80)
-    print("年度收益统计")
-    print("="*80)
-    
-    # 收集所有年份
-    all_years = set()
-    for r in results:
-        for year in r['yearly_returns']:
-            all_years.add(year)
-    all_years = sorted(list(all_years))
-    
-    if all_years:
-        print(f"\n{'股票':<10}", end='')
-        for year in all_years:
-            print(f"{year:<10}", end='')
-        print(f"{'总计':<10}")
-        print("-" * (10 + 10 * len(all_years) + 10))
-        
-        # 每个股票的年度收益
-        for r in results_sorted[:10]:  # 只显示前10名
-            print(f"{r['stock_code']:<10}", end='')
-            for year in all_years:
-                if year in r['yearly_returns']:
-                    ret = r['yearly_returns'][year]
-                    print(f"{ret:>8.1f}%", end='  ')
-                else:
-                    print(f"{'N/A':>8}", end='  ')
-            print(f"{r['total_return']:>8.1f}%")
-        
-        # 年度统计
-        print("\n" + "-" * (10 + 10 * len(all_years) + 10))
-        print(f"{'平均':<10}", end='')
-        for year in all_years:
-            year_returns_list = []
-            for r in results:
-                if year in r['yearly_returns']:
-                    year_returns_list.append(r['yearly_returns'][year])
-            if year_returns_list:
-                avg_ret = np.mean(year_returns_list)
-                print(f"{avg_ret:>8.1f}%", end='  ')
-            else:
-                print(f"{'N/A':>8}", end='  ')
-        print(f"{np.mean(returns):>8.1f}%")
-        
-        print(f"{'最高':<10}", end='')
-        for year in all_years:
-            year_returns_list = []
-            for r in results:
-                if year in r['yearly_returns']:
-                    year_returns_list.append(r['yearly_returns'][year])
-            if year_returns_list:
-                max_ret = max(year_returns_list)
-                print(f"{max_ret:>8.1f}%", end='  ')
-            else:
-                print(f"{'N/A':>8}", end='  ')
-        print(f"{max(returns):>8.1f}%")
-        
-        print(f"{'最低':<10}", end='')
-        for year in all_years:
-            year_returns_list = []
-            for r in results:
-                if year in r['yearly_returns']:
-                    year_returns_list.append(r['yearly_returns'][year])
-            if year_returns_list:
-                min_ret = min(year_returns_list)
-                print(f"{min_ret:>8.1f}%", end='  ')
-            else:
-                print(f"{'N/A':>8}", end='  ')
-        print(f"{min(returns):>8.1f}%")
-    
-    # 输出详细交易记录
-    print("\n" + "="*80)
-    print("详细交易记录 (前5名)")
-    print("="*80)
-    
-    for r in results_sorted[:5]:
+    # 打印汇总
+    if len(results) > 1:
         print(f"\n{'='*80}")
-        print(f"股票: {r['stock_code']} | 总收益率: {r['total_return']:.2f}% | 交易次数: {r['trade_count']}")
+        print("汇总结果")
         print(f"{'='*80}")
-        print(f"{'日期':<12} {'操作':<8} {'价格':>10} {'股数':>8} {'盈亏':>12}")
-        print("-" * 60)
-        
-        for t in r['trades']:
-            profit_str = f"{t.get('profit', 0):,.2f}" if t.get('action') == '卖出' else '-'
-            print(f"{t.get('date', ''):<12} {t.get('action', ''):<8} {t.get('price', 0):>10.2f} {t.get('shares', 0):>8} {profit_str:>12}")
-        
-        print(f"{'-'*60}")
-        print(f"最终市值: {r['final_value']:,.2f}")
-    
-    print("\n" + "="*80)
-    print("结论")
-    print("="*80)
-    
-    positive_count = sum(1 for r in returns if r > 0)
-    negative_count = len(returns) - positive_count
-    
-    print(f"盈利次数: {positive_count}/{len(results)} ({positive_count/len(results)*100:.1f}%)")
-    print(f"亏损次数: {negative_count}/{len(results)} ({negative_count/len(results)*100:.1f}%)")
-    
-    if np.std(returns) < 50:
-        print("\n策略鲁棒性: 优秀 (收益率标准差 < 50%)")
-    elif np.std(returns) < 100:
-        print("\n策略鲁棒性: 良好 (收益率标准差 < 100%)")
-    else:
-        print("\n策略鲁棒性: 一般 (收益率标准差 >= 100%)")
-    
-    print("="*80)
-    
-    return results
+        for r in results:
+            print(f"{r['stock_code']}: 收益率 {r['total_return_pct']:+.2f}%, 最终市值 {r['final_value']:,.2f}")
+        print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
-    try:
-        results = run_robustness_test()
-    except KeyboardInterrupt:
-        print("\n\n程序被用户中断")
-    except Exception as e:
-        print(f"\n\n程序运行出错: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
