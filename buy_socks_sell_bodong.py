@@ -420,14 +420,27 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         current_high = row[high_col] if pd.notna(row[high_col]) else 0
                         condition2 = (current_high > 0 and 
                                      close_price <= current_high * SELL_A_HIGH_DROP_RATIO)
-                        if condition1 or condition2:
+                        # 条件3：波动率满足卖出A条件（波动率>0且降低，且降至前一天阈值以下）
+                        condition3 = False
+                        if volatility > 0 and is_volatility_declining:
+                            volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
+                            if volatility_ratio <= SELL_RATIO_THRESHOLD:
+                                condition3 = True
+                        if condition1 or condition2 or condition3:
                             should_sell = True
                             if condition1 and condition2:
                                 sell_reason = "比率卖出(待卖A-MA20且N日高价触发)"
                             elif condition1:
                                 sell_reason = "比率卖出(待卖A-MA20触发)"
-                            else:
+                            elif condition2:
                                 sell_reason = "比率卖出(待卖A-N日高价触发)"
+                            else:
+                                sell_reason = "比率卖出(待卖A-波动率触发)"
+                            sell_a_delayed_pending = False
+                        # 待卖A状态下，如果触发爆发C条件（单日大幅下跌），也应该卖出
+                        elif outbreak_c_triggered:
+                            should_sell = True
+                            sell_reason = "爆发C卖出(待卖A状态)"
                             sell_a_delayed_pending = False
                     elif not sell_a_delayed_pending:
                         # 未触发延迟卖出条件，正常卖出
@@ -588,7 +601,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     price_atr_multiplier = (close_price - ma20) / df.loc[i, 'ATR']
                 can_buy = False
                 # 待买A期间如果触发原始卖出A信号，则本轮待买失效并重置，避免跨越原有买卖A周期
-                if should_sell:
+                # 在待买A状态下独立检查卖出A条件（波动率>0且降低，且降至前一天阈值以下）
+                sell_a_condition_in_pending = False
+                if volatility > 0 and is_volatility_declining:
+                    volatility_ratio = volatility / prev_volatility if prev_volatility > 0 else 1.0
+                    if volatility_ratio <= SELL_RATIO_THRESHOLD:
+                        sell_a_condition_in_pending = True
+                
+                if should_sell or sell_a_condition_in_pending:
                     buy_a_delayed_pending = False
                     buy_a_marked = False
                     buy_a_pending_price = 0.0
