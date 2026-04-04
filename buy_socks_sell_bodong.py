@@ -81,6 +81,11 @@ MAIN_ACCOUNT_SELL_PRICE_DROP_MULTIPLIERS = [0, 1.0, 2.0, 3.0]  # 卖出触发ATR
 # 卖出比例配置（两种方式共用）
 MAIN_ACCOUNT_SELL_RATIOS = [0.30, 0.30, 0.25, 0.15]          # 对应卖出比例（30%, 30%, 40%）
 
+# ATR周期配置
+ATR_PERIOD = 14  # ATR计算周期，可配置为10、14、20等
+ATR_PERCENTILE_DAYS = 60  # ATR分位数计算周期（默认120天）
+ATR_PERCENTILE_TREND_THRESHOLD = 0.01 # ATR分位数趋势判断阈值（5%），超过此变化才认为是趋势变化
+
 # 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
 MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
 
@@ -155,19 +160,83 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     # 计算技术指标
     df['ma20'] = df['收盘'].rolling(window=20, min_periods=20).mean()
     
-    # 计算ATR
+    # 计算ATR（使用可配置周期）
     prev_close = df['收盘'].shift(1)
     tr1 = df['最高'] - df['最低']
     tr2 = (df['最高'] - prev_close).abs()
     tr3 = (df['最低'] - prev_close).abs()
     df['tr'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df['atr14'] = df['tr'].rolling(window=14, min_periods=14).mean()
+    df['atr'] = df['tr'].rolling(window=ATR_PERIOD, min_periods=ATR_PERIOD).mean()
     
-    # 计算波动率
-    df = calculate_slope_atr(df, ma_period=20, atr_period=14, n=5)
+    # 计算波动率（使用可配置ATR周期）
+    df = calculate_slope_atr(df, ma_period=20, atr_period=ATR_PERIOD, n=5)
     
     # 计算价格相对ATR的倍数：(收盘价 - MA20) / ATR
-    df['价ATR倍'] = ((df['收盘'] - df['ma20']) / df['atr14']).replace([np.inf, -np.inf], np.nan)
+    df['价ATR倍'] = ((df['收盘'] - df['ma20']) / df['atr']).replace([np.inf, -np.inf], np.nan)
+    # 计算ATR分位数：当前ATR在过去N天中的分位值
+    # atr_pct[t] = count(ATR[i] <= ATR[t]) / N
+    def calculate_atr_percentile(series, window=ATR_PERCENTILE_DAYS):
+        """计算ATR在过去N天中的分位数"""
+        result = pd.Series(index=series.index, dtype=float)
+        for i in range(len(series)):
+            if i < window - 1:
+                # 数据不足N天，使用已有数据计算
+                window_data = series.iloc[:i+1].dropna()
+            else:
+                window_data = series.iloc[i-window+1:i+1].dropna()
+            if len(window_data) > 0 and pd.notna(series.iloc[i]):
+                current_atr = series.iloc[i]
+                # 计算分位数：小于等于当前值的个数 / 总数
+                count_le = (window_data <= current_atr).sum()
+                result.iloc[i] = count_le / len(window_data)
+            else:
+                result.iloc[i] = np.nan
+        return result
+    
+    df['atr_pct'] = calculate_atr_percentile(df['atr'], window=ATR_PERCENTILE_DAYS)
+    
+    # 计算ATR分位数趋势（上升/下降/平稳）
+    # 使用5日移动平均来平滑，然后判断趋势
+    df['atr_pct_ma5'] = df['atr_pct'].rolling(window=5, min_periods=3).mean()
+    df['atr_pct_trend'] = ''
+    
+    for i in range(len(df)):
+        if i < 5 or pd.isna(df.loc[i, 'atr_pct_ma5']) or pd.isna(df.loc[i-1, 'atr_pct_ma5']):
+            df.loc[i, 'atr_pct_trend'] = ''
+            continue
+        
+        current_ma = df.loc[i, 'atr_pct_ma5']
+        prev_ma = df.loc[i-1, 'atr_pct_ma5']
+        change = current_ma - prev_ma
+        
+        if abs(change) < ATR_PERCENTILE_TREND_THRESHOLD:
+            df.loc[i, 'atr_pct_trend'] = '→'  # 平稳
+        elif change > 0:
+            df.loc[i, 'atr_pct_trend'] = '↑'  # 上升
+        else:
+            df.loc[i, 'atr_pct_trend'] = '↓'  # 下降
+    
+    # 计算收盘价格趋势（使用5日移动平均，阈值1%）
+    CLOSE_PRICE_TREND_THRESHOLD = 0.01  # 收盘价格趋势判断阈值（1%）
+    df['close_ma5'] = df['收盘'].rolling(window=5, min_periods=3).mean()
+    df['close_trend'] = ''
+    
+    for i in range(len(df)):
+        if i < 5 or pd.isna(df.loc[i, 'close_ma5']) or pd.isna(df.loc[i-1, 'close_ma5']):
+            df.loc[i, 'close_trend'] = ''
+            continue
+        
+        current_ma = df.loc[i, 'close_ma5']
+        prev_ma = df.loc[i-1, 'close_ma5']
+        change_pct = (current_ma - prev_ma) / prev_ma if prev_ma != 0 else 0
+        
+        if abs(change_pct) < CLOSE_PRICE_TREND_THRESHOLD:
+            df.loc[i, 'close_trend'] = '→'  # 平稳
+        elif change_pct > 0:
+            df.loc[i, 'close_trend'] = '↑'  # 上升
+        else:
+            df.loc[i, 'close_trend'] = '↓'  # 下降
+    
     # 计算5日价ATR倍平均数
     df['5日价ATR平均'] = df['价ATR倍'].rolling(window=5, min_periods=1).mean()
     # 计算价ATR倍连续小于5日价ATR平均的天数
@@ -333,7 +402,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖")
     log_print(f"{'='*165}\n")
 
-    header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'MA20':>8} {'收盘/MA20':>10} {'10日平均':>10} {'ATR14':>8} {'波动率':>8} {'价ATR倍':>8} {'5日ATR平均':>8} {'10日最低价ATR倍数':>16} {f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高':>8} {'持仓最高':>8}   {'操作':<30} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'MA20':>8} {'ATR'+str(ATR_PERIOD):>8} {'波动率':>8} {'价ATR倍':>8} {'atr_pct':>8} {'趋势':>6} {'价趋势':>6} {'5日ATR平均':>8} {'10日最低价ATR倍数':>16} {f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高':>8} {'持仓最高':>8}   {'操作':<30} {'持仓':>8} {'市值':>12}"
     log_print(header)
     log_print("-" * 185)
     
@@ -990,7 +1059,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                                 reasons.append('E')
                             outbreak_sell_reason = '+'.join(reasons)
 
-                current_atr = row['atr14'] if pd.notna(row['atr14']) else 0
+                current_atr = row['atr'] if pd.notna(row['atr']) else 0
                 # 爆发买入锁定：当爆发买入激活时，只允许多止盈卖出和止损卖出，跳过追跌卖档位逻辑
                 can_evaluate_sell = stop_loss_triggered or take_profit_triggered or (not main_account_outbreak_buy_active)
 
@@ -1131,14 +1200,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         
         # 数据显示（所有情况都显示，包括可买未买）
         ma20_str = f"{ma20:.2f}" if pd.notna(ma20) else "N/A"
-        # 计算收盘价相对于MA20的百分比
-        close_ma20_pct = (close_price / ma20 - 1) * 100 if pd.notna(ma20) and ma20 > 0 else 0
-        close_ma20_pct_str = f"{close_ma20_pct:+.1f}%" if pd.notna(ma20) and ma20 > 0 else "N/A"
-        # 10日平均收盘/MA20百分比
-        ten_day_avg_close_ma20_str = f"{row['10日平均收盘_MA20']:+.1f}%" if pd.notna(row['10日平均收盘_MA20']) else "N/A"
-        atr14_str = f"{row['atr14']:.2f}" if pd.notna(row['atr14']) else "N/A"
+        atr_str = f"{row['atr']:.2f}" if pd.notna(row['atr']) else "N/A"
         volatility_str = f"{volatility:.2f}" if pd.notna(volatility) else "N/A"
         price_atr_ratio_str = f"{row['价ATR倍']:.2f}" if pd.notna(row['价ATR倍']) else "N/A"
+        # atr_pct列（ATR分位数，显示为百分比）
+        atr_pct_str = f"{row['atr_pct']*100:.1f}%" if pd.notna(row['atr_pct']) else "N/A"
+        # atr_pct趋势列
+        atr_pct_trend_str = row['atr_pct_trend'] if pd.notna(row['atr_pct_trend']) else ""
+        # 收盘价格趋势列
+        close_trend_str = row['close_trend'] if pd.notna(row['close_trend']) else ""
         # 计算5日ATR平均
         five_day_atr_avg_str = f"{row['5日价ATR平均']:.2f}" if pd.notna(row['5日价ATR平均']) else "N/A"
         # 10日最低ATR倍数
@@ -1150,7 +1220,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         total_position = position + main_account_sell_buy_position
         holding_high_str = f"{main_account_holding_high:.2f}" if total_position > 0 and main_account_holding_high > 0 else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {close_ma20_pct_str:>10} {ten_day_avg_close_ma20_str:>10} {atr14_str:>8} {volatility_str:>8} {price_atr_ratio_str:>8} {five_day_atr_avg_str:>8} {ten_day_low_atr_str:>12} {n_day_high_str:>8} {holding_high_str:>8}   {action:<30} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr_str:>8} {volatility_str:>8} {price_atr_ratio_str:>8} {atr_pct_str:>8} {atr_pct_trend_str:>6} {close_trend_str:>6} {five_day_atr_avg_str:>8} {ten_day_low_atr_str:>12} {n_day_high_str:>8} {holding_high_str:>8}   {action:<30} {position_str:>8} {market_value:>12,.2f}")
     
     # 计算最终收益（主仓 + 主账户区间仓位）
     final_position = position
@@ -1236,7 +1306,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         last_row = df.iloc[-1]
         last_close = last_row['收盘']
         last_ma20 = last_row['ma20']
-        last_atr14 = last_row['atr14']
+        last_atr = last_row['atr']
         last_volatility = last_row['波动率']
         
         log_print(f"\n【第二天卖出价格预测 - 基于当前价格{last_close:.2f}】")
@@ -1247,14 +1317,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         sell_triggers = []
         
         # 波动率比率卖出
-        if pd.notna(last_volatility) and pd.notna(last_atr14) and last_atr14 > 0 and len(df) >= 5:
+        if pd.notna(last_volatility) and pd.notna(last_atr) and last_atr > 0 and len(df) >= 5:
             ma20_t_minus_4 = df.iloc[-5]['ma20'] if pd.notna(df.iloc[-5]['ma20']) else last_ma20
             
             # 计算波动率比率卖出的触发价格
             # 如果波动率 > 0 且下一天波动率降低至 SELL_RATIO_THRESHOLD 以下
             if last_volatility > 0:
                 target_volatility = last_volatility * SELL_RATIO_THRESHOLD
-                target_ma20_change = target_volatility * last_atr14
+                target_ma20_change = target_volatility * last_atr
                 target_price_vol = (target_ma20_change + ma20_t_minus_4) * 20 - last_ma20 * 19
                 
                 sell_triggers.append({
