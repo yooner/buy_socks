@@ -66,12 +66,12 @@ ENABLE_MAIN_ACCOUNT_BUY_BY_ATR = True  # 是否启用基于价ATR倍数的买入
 MAIN_ACCOUNT_BUY_LEVELS = [-0.13, -0.20]  # 买入触发跌幅（-4%, -8%, -13%）
 
 # 追买机制配置（基于跌幅买入的追加买入）
-ENABLE_MAIN_ACCOUNT_CHASE_BUY = False  # 是否启用追买机制
+ENABLE_MAIN_ACCOUNT_CHASE_BUY = True  # 是否启用追买机制
 MAIN_ACCOUNT_CHASE_BUY_PRICE_DROP = 0.02  # 价格相对于上一次跌幅买入价格降低多少触发追买（默认0.02即2%）
 MAIN_ACCOUNT_CHASE_BUY_RATIO = 0.20  # 追买比例（默认20%）
 MAIN_ACCOUNT_CHASE_BUY_MAX_COUNT = 5  # 最大追买次数（防止无限追买）
 # 基于价ATR倍数的买入配置
-MAIN_ACCOUNT_BUY_ATR_LEVELS = [-3.0, -4.0, -5.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
+MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.8, -4.0, -5.0]  # 买入触发价ATR倍数阈值（对应买1: >-3, 买2: >-4, 买3: <=-4）
 MAIN_ACCOUNT_BUY_ATR_CONSECUTIVE_DAYS = [2, 1, 1]  # 各档位需要的连续天数（买1需连续3天满足条件，买2买3只需1天）
 # 买入比例配置
 # 基于价ATR倍数的买入比例配置
@@ -101,7 +101,7 @@ MAIN_ACCOUNT_OUTBREAK_BUY_CONSECUTIVE_DAYS = 3  # 价ATR倍连续大于阈值的
 MAIN_ACCOUNT_OUTBREAK_BUY_PRICE_ATR_THRESHOLD = 1.1  # 价ATR倍买入阈值
 # 爆发买入分仓配置
 ENABLE_MAIN_ACCOUNT_OUTBREAK_POSITION_BUY = True  # 是否启用分仓买入（ATR趋势非上涨且分位>阈值时）
-MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_PERCENTILE_THRESHOLD = 0.50  # 分位阈值（默认50%）
+MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_PERCENTILE_THRESHOLD = 0.40  # 分位阈值（默认50%）
 MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_COUNT = 4  # 分仓数量（默认4仓）
 # 爆发卖出配置
 MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS = 4  # 计算最高价的周期（默认5日，可设置为3日等）
