@@ -53,6 +53,9 @@ SELL_A_MA20_THRESHOLD_PCT = 0.11  # 收盘价高于MA20该比例时（默认11%�
 SELL_A_MA20_SELL_RATIO = 0.97  # 延迟卖出时，价格需低于MA20的该比例才卖出（默认0.97即低于MA20的3%）
 # N日高价卖出条件（使用MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS作为周期）
 SELL_A_HIGH_DROP_RATIO = 0.90  # 收盘价低于N日高价的该比例时卖出（默认0.95即下跌5%）
+# 持仓期间最高价卖出条件：当收盘价低于持仓期间最高价的设定百分比时卖出
+SELL_A_HOLDING_HIGH_DROP_RATIO = 0.50  # 收盘价低于持仓期间最高价的该比例时卖出（默认0.07即下跌7%）
+
 
 # 买入条件全局参数
 BUY_DECLINE_DAYS_REQUIRED = 3  # 波动率连续向0靠近所需天数（条件A）
@@ -90,15 +93,15 @@ MAIN_ACCOUNT_SELL_RATIOS = [0.30, 0.30, 0.25, 0.15]          # 对应卖出比�
 # ATR周期配置
 ATR_PERIOD = 14  # ATR计算周期，可配置为10、14、20等
 ATR_PERCENTILE_DAYS = 60  # ATR分位数计算周期（默认120天）
-ATR_PERCENTILE_TREND_THRESHOLD = 0.01 # ATR分位数趋势判断阈值（5%），超过此变化才认为是趋势变化
+ATR_PERCENTILE_TREND_THRESHOLD = 0.005 # ATR分位数趋势判断阈值（5%），超过此变化才认为是趋势变化
 
 # 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
 MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
 
 # 爆发买入机制（卖出A与买入A之间）
 ENABLE_MAIN_ACCOUNT_OUTBREAK_BUY = True  # 是否启用爆发买入机制
-MAIN_ACCOUNT_OUTBREAK_BUY_CONSECUTIVE_DAYS = 3  # 价ATR倍连续大于阈值的天数
-MAIN_ACCOUNT_OUTBREAK_BUY_PRICE_ATR_THRESHOLD = 1.1  # 价ATR倍买入阈值
+MAIN_ACCOUNT_OUTBREAK_BUY_CONSECUTIVE_DAYS = 2  # 价ATR倍连续大于阈值的天数
+MAIN_ACCOUNT_OUTBREAK_BUY_PRICE_ATR_THRESHOLD = 0.8  # 价ATR倍买入阈值
 # 爆发买入分仓配置
 ENABLE_MAIN_ACCOUNT_OUTBREAK_POSITION_BUY = True  # 是否启用分仓买入（ATR趋势非上涨且分位>阈值时）
 MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_PERCENTILE_THRESHOLD = 0.40  # 分位阈值（默认50%）
@@ -108,8 +111,12 @@ MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS = 4  # 计算最高价的周期（默认5�
 MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD = 0.07  # 最高价下降超过该比例才卖出（防止小幅波动）
 MAIN_ACCOUNT_OUTBREAK_SELL_DROP_THRESHOLD = -0.10  # 收盘价与N日最高价差距阈值，小于该值卖出（默认-10%）
 MAIN_ACCOUNT_OUTBREAK_SELL_PREV_DAY_RATIO = 0.91  # 单日跌幅阈值，收盘价低于前一天该比例则卖出（默认0.96即跌幅4%）
-MAIN_ACCOUNT_OUTBREAK_SELL_HOLDING_HIGH_THRESHOLD = 0.10  # 收盘价低于持仓期间最高价的阈值，超过该比例卖出（默认7%）
+MAIN_ACCOUNT_OUTBREAK_SELL_HOLDING_HIGH_THRESHOLD = 0.12  # 收盘价低于持仓期间最高价的阈值，超过该比例卖出（默认7%）
 MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_MA20_CONDITION = False  # 是否启用跌破MA20的卖出条件（条件E）
+# 连续N天未创新高卖出配置（替代跌破MA20卖出条件E）
+MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_NO_NEW_HIGH_CONDITION = True  # 是否启用连续N天未创新高卖出条件（新条件E）
+MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_DAYS = 6  # 连续多少天未创新高就卖出（默认5天）
+MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收盘价低于持仓最高价的该比例时视为未创新高（默认0.98即低于最高价2%）
 
 # 爆发模式止盈卖出配置
 ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT = False  # 是否启用爆发模式止盈卖出
@@ -124,7 +131,7 @@ BUY_A_DELAYED_NEW_HIT_DAYS = 1  # 价ATR倍 < 5日价ATR倍累计天数
 BUY_A_DELAYED_NEW_FIVE_DAY_ATR_THRESHOLD = -1.1  # 5日价ATR倍阈值
 BUY_A_DELAYED_NEW_FORCE_BUY_ATR = -3.0  # 强制满仓的价ATR倍阈值
 
-
+CLOSE_PRICE_TREND_THRESHOLD = 0.005  # 收盘价格趋势判断阈值（1%）
 
 
 def calculate_slope_atr(df, ma_period=20, atr_period=14, n=5):
@@ -207,7 +214,7 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # 计算ATR分位数趋势（上升/下降/平稳）
     # 使用5日移动平均来平滑，然后判断趋势
-    df['atr_pct_ma5'] = df['atr_pct'].rolling(window=5, min_periods=3).mean()
+    df['atr_pct_ma5'] = df['atr_pct'].rolling(window=7, min_periods=4).mean()
     df['atr_pct_trend'] = ''
     
     for i in range(len(df)):
@@ -227,8 +234,8 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
             df.loc[i, 'atr_pct_trend'] = '↓'  # 下降
     
     # 计算收盘价格趋势（使用5日移动平均，阈值1%）
-    CLOSE_PRICE_TREND_THRESHOLD = 0.01  # 收盘价格趋势判断阈值（1%）
-    df['close_ma5'] = df['收盘'].rolling(window=5, min_periods=3).mean()
+    
+    df['close_ma5'] = df['收盘'].rolling(window=3, min_periods=2).mean()
     df['close_trend'] = ''
     
     for i in range(len(df)):
@@ -390,6 +397,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         # 追买机制状态变量
         main_account_chase_buy_last_price = 0  # 上一次跌幅买入的价格（用于追买计算）
         main_account_chase_buy_count = 0  # 已追买次数
+        # 连续未创新高卖出状态变量
+        main_account_no_new_high_days = 0  # 连续未创新高天数计数器
+        main_account_last_high_price = 0  # 上一次创新高的价格
     else:
         main_account_sell_buy_levels_triggered_atr = []
         main_account_sell_buy_levels_consecutive_days = []
@@ -418,6 +428,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         # 追买机制状态变量
         main_account_chase_buy_last_price = 0
         main_account_chase_buy_count = 0
+        # 连续未创新高卖出状态变量
+        main_account_no_new_high_days = 0
+        main_account_last_high_price = 0
 
     # 收集所有输出内容
     output_lines = []
@@ -459,9 +472,27 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             if main_account_holding_high == 0:
                 # 首次持仓，初始化最高价
                 main_account_holding_high = close_price
+                # 初始化连续未创新高计数
+                if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                    main_account_last_high_price = close_price
+                    main_account_no_new_high_days = 0
             elif close_price > main_account_holding_high:
                 # 价格创新高，更新最高价
                 main_account_holding_high = close_price
+                # 重置连续未创新高计数
+                if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
+                    main_account_last_high_price = close_price
+                    main_account_no_new_high_days = 0
+            else:
+                # 检查是否低于最高价的阈值比例
+                if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_last_high_price > 0:
+                    price_ratio = close_price / main_account_last_high_price
+                    if price_ratio < MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_RATIO:
+                        # 低于阈值比例，增加未创新高计数
+                        main_account_no_new_high_days += 1
+                    else:
+                        # 虽然未创新高，但在阈值范围内，重置计数
+                        main_account_no_new_high_days = 0
         
         # 确保数据有效
         if pd.notna(volatility):
@@ -560,6 +591,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 should_sell = True
                 sell_reason = "爆发C卖出"
             
+            # 持仓期间最高价卖出条件：当收盘价低于持仓期间最高价的设定百分比时卖出
+            if position > 0 and main_account_holding_high > 0 and not should_sell:
+                holding_high_drop_pct = (main_account_holding_high - close_price) / main_account_holding_high
+                if holding_high_drop_pct > SELL_A_HOLDING_HIGH_DROP_RATIO:
+                    should_sell = True
+                    sell_reason = f"比率卖出(持仓最高价下跌{holding_high_drop_pct*100:.1f}%)"
+            
             # 卖出逻辑
             if position > 0:
                 if should_sell:
@@ -611,6 +649,22 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 重置追买状态
                         main_account_chase_buy_last_price = 0
                         main_account_chase_buy_count = 0
+                    
+                    # 卖出时同步重置爆发买入状态（解锁）
+                    if main_account_outbreak_buy_active:
+                        main_account_outbreak_buy_active = False
+                        main_account_outbreak_buy_price = 0
+                        main_account_outbreak_buy_consecutive_days = 0
+                        main_account_outbreak_sell_high = 0
+                        # 重置爆发模式止盈卖出状态
+                        main_account_outbreak_take_profit_active = False
+                        main_account_outbreak_take_profit_prev_close = 0
+                        # 重置分仓买入状态
+                        main_account_outbreak_position_buy_active = False
+                        main_account_outbreak_position_buy_count = 0
+                        main_account_outbreak_position_buy_prices = []
+                        main_account_outbreak_position_buy_pending = False
+                        main_account_outbreak_position_buy_trigger_price = 0
             # 更新前一天的波动率
             prev_volatility = volatility
 
@@ -962,6 +1016,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             main_account_outbreak_sell_high = row[high_col] if pd.notna(row[high_col]) else close_price
                             # 初始化持仓期间最高价为买入价格
                             main_account_holding_high = close_price
+                            # 初始化连续未创新高计数
+                            main_account_last_high_price = close_price
+                            main_account_no_new_high_days = 0
                             # 重置爆发模式止盈卖出状态
                             main_account_outbreak_take_profit_active = False
                             main_account_outbreak_take_profit_prev_close = 0
@@ -1002,6 +1059,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             main_account_outbreak_sell_high = row[high_col] if pd.notna(row[high_col]) else close_price
                             # 初始化持仓期间最高价为买入价格
                             main_account_holding_high = close_price
+                            # 初始化连续未创新高计数
+                            main_account_last_high_price = close_price
+                            main_account_no_new_high_days = 0
                             # 重置爆发模式止盈卖出状态
                             main_account_outbreak_take_profit_active = False
                             main_account_outbreak_take_profit_prev_close = 0
@@ -1324,17 +1384,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         action = f"主账户追买{main_account_chase_buy_count}@{close_price:.2f}(较上次跌{price_drop_from_last*100:.1f}%) 持仓{main_account_sell_buy_position}"
                         has_buy_today = True
 
-            # ========================================
-            # 条件E卖出后的解锁检查：
-            # 如果之前是条件E卖出（main_account_outbreak_buy_active=True但持仓为0），
-            # 需要检查其他非E的爆发卖出条件（A/B/C/D）来解锁
-            # ========================================
-            need_check_outbreak_unlock = (main_account_outbreak_buy_active and 
-                                          main_account_sell_buy_position == 0 and 
-                                          not has_buy_today)
-            
             # 只有当当天没有买入操作时，才执行卖出
-            if (main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0 and not has_buy_today) or need_check_outbreak_unlock:
+            if main_account_sell_buy_position > 0 and main_account_sell_buy_price > 0 and not has_buy_today:
                 # 检查是否触发爆发卖出
                 stop_loss_triggered = False
                 take_profit_triggered = False  # 止盈卖出触发标记
@@ -1425,10 +1476,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         holding_high_drop_pct = (main_account_holding_high - close_price) / main_account_holding_high if main_account_holding_high > 0 else 0
                         condition_d = holding_high_drop_pct > MAIN_ACCOUNT_OUTBREAK_SELL_HOLDING_HIGH_THRESHOLD
 
-                        # 条件E：收盘价跌破MA20（受开关控制）
+                        # 条件E：连续N天未创新高卖出（替代跌破MA20）
                         condition_e = False
-                        if MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_MA20_CONDITION:
-                            condition_e = close_price < ma20 and pd.notna(ma20)
+                        if MAIN_ACCOUNT_OUTBREAK_SELL_ENABLE_NO_NEW_HIGH_CONDITION:
+                            condition_e = main_account_no_new_high_days >= MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_DAYS
 
                         # 任一条件满足即触发卖出，并记录触发条件
                         if condition_a or condition_b or condition_c or condition_d or condition_e:
@@ -1450,33 +1501,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 current_atr = row['atr'] if pd.notna(row['atr']) else 0
                 # 爆发买入锁定：当爆发买入激活时，只允许多止盈卖出和止损卖出，跳过追跌卖档位逻辑
                 can_evaluate_sell = stop_loss_triggered or take_profit_triggered or (not main_account_outbreak_buy_active)
-
-                # ========================================
-                # 条件E卖出后的解锁逻辑：
-                # 如果之前是条件E卖出（need_check_outbreak_unlock=True），
-                # 且其他非E条件（A/B/C/D）触发，则解锁爆发买入状态
-                # ========================================
-                if need_check_outbreak_unlock and stop_loss_triggered:
-                    # 检查是否只有条件E触发（不应该发生，因为已经卖出了）
-                    # 或者有其他非E条件触发
-                    has_non_e_condition = condition_a or condition_b or condition_c or condition_d
-                    if has_non_e_condition:
-                        # 其他非E条件触发，解锁爆发买入状态
-                        main_account_outbreak_buy_active = False
-                        main_account_outbreak_buy_price = 0
-                        main_account_outbreak_buy_consecutive_days = 0
-                        main_account_outbreak_sell_high = 0
-                        # 重置爆发模式止盈卖出状态
-                        main_account_outbreak_take_profit_active = False
-                        main_account_outbreak_take_profit_prev_close = 0
-                        # 重置分仓买入状态
-                        main_account_outbreak_position_buy_active = False
-                        main_account_outbreak_position_buy_count = 0
-                        main_account_outbreak_position_buy_prices = []
-                        main_account_outbreak_position_buy_pending = False
-                        main_account_outbreak_position_buy_trigger_price = 0
-                        # 记录解锁动作
-                        action = f"主账户爆发解锁({outbreak_sell_reason})@{close_price:.2f}"
 
                 if can_evaluate_sell:
                     # 计算基于MA20的价ATR倍数
@@ -1572,23 +1596,23 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             # 区间交易全部卖出后，设置锚定价格以便后续继续区间交易买入
                             main_account_drop_anchor_price = close_price
                             # 只有当仓位全部卖出时，才重置爆发买入状态
-                            # 条件E（跌破MA20）卖出时，不重置爆发买入状态，防止追高再次买入
-                            # 只有当其他条件（A/B/C/D）触发时，才完全重置
-                            is_condition_e_only = outbreak_sell_reason == 'E' if 'outbreak_sell_reason' in locals() else False
-                            if not is_condition_e_only:
-                                main_account_outbreak_buy_active = False
-                                main_account_outbreak_buy_price = 0
-                                main_account_outbreak_buy_consecutive_days = 0
-                                main_account_outbreak_sell_high = 0  # 重置N日最高价
-                                # 重置爆发模式止盈卖出状态
-                                main_account_outbreak_take_profit_active = False
-                                main_account_outbreak_take_profit_prev_close = 0
-                                # 重置分仓买入状态
-                                main_account_outbreak_position_buy_active = False
-                                main_account_outbreak_position_buy_count = 0
-                                main_account_outbreak_position_buy_prices = []
-                                main_account_outbreak_position_buy_pending = False
-                                main_account_outbreak_position_buy_trigger_price = 0
+                            # 条件E（连续N天未创新高）卖出时，也需要重置爆发买入状态
+                            main_account_outbreak_buy_active = False
+                            main_account_outbreak_buy_price = 0
+                            main_account_outbreak_buy_consecutive_days = 0
+                            main_account_outbreak_sell_high = 0  # 重置N日最高价
+                            # 重置爆发模式止盈卖出状态
+                            main_account_outbreak_take_profit_active = False
+                            main_account_outbreak_take_profit_prev_close = 0
+                            # 重置分仓买入状态
+                            main_account_outbreak_position_buy_active = False
+                            main_account_outbreak_position_buy_count = 0
+                            main_account_outbreak_position_buy_prices = []
+                            main_account_outbreak_position_buy_pending = False
+                            main_account_outbreak_position_buy_trigger_price = 0
+                            # 重置连续未创新高计数
+                            main_account_no_new_high_days = 0
+                            main_account_last_high_price = 0
 
         # 如果持仓全部卖出，重置持仓最高价
         total_position = position + main_account_sell_buy_position
@@ -1684,22 +1708,38 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         log_print(f"\n交易明细:")
         log_print(f"{'序号':<6} {'日期':<6} {'操作':<6} {'价格':>10} {'股数':>10} {'盈亏':>12} {'盈亏%':>8}")
         log_print("-" * 80)
+        # 用于跟踪持仓成本的变量
+        current_position = 0
+        current_avg_cost = 0.0
+        
         for idx, trade in enumerate(trades, 1):
             profit_str = f"{trade.get('profit', 0):,.2f}" if 'profit' in trade else "-"
             # 计算盈亏百分比
             if 'profit' in trade and trade['action'] == '卖出':
-                # 找到对应的买入交易
-                buy_trade = None
-                for t in trades[:idx-1]:
-                    if t['action'] == '买入':
-                        buy_trade = t
-                if buy_trade:
-                    profit_pct = (trade.get('profit', 0) / (buy_trade['price'] * buy_trade['shares'])) * 100
+                # 使用累计的平均持仓成本计算盈利百分比
+                if current_position > 0 and current_avg_cost > 0:
+                    total_cost = current_avg_cost * trade['shares']
+                    profit_pct = (trade.get('profit', 0) / total_cost) * 100
                     profit_pct_str = f"{profit_pct:+.2f}%"
                 else:
                     profit_pct_str = "-"
+                # 卖出后减少持仓
+                current_position -= trade['shares']
+                if current_position <= 0:
+                    current_position = 0
+                    current_avg_cost = 0.0
             else:
                 profit_pct_str = "-"
+                # 买入时更新平均持仓成本
+                if trade['action'] == '买入' and trade['shares'] > 0:
+                    if current_position == 0:
+                        current_avg_cost = trade['price']
+                        current_position = trade['shares']
+                    else:
+                        # 加权平均计算新的持仓成本
+                        total_cost = current_avg_cost * current_position + trade['price'] * trade['shares']
+                        current_position += trade['shares']
+                        current_avg_cost = total_cost / current_position
             log_print(f"{idx:<6} {trade['date']:<12} {trade['action']:<6} {trade['price']:>10.2f} {trade['shares']:>10} {profit_str:>12} {profit_pct_str:>8}")
 
     log_print(f"{'='*175}")
