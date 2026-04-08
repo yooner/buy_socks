@@ -400,6 +400,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         # 连续未创新高卖出状态变量
         main_account_no_new_high_days = 0  # 连续未创新高天数计数器
         main_account_last_high_price = 0  # 上一次创新高的价格
+        # 爆发卖出E后的买回机制状态变量
+        main_account_outbreak_sell_e_active = False  # 是否处于卖出E后的买回模式
+        main_account_outbreak_sell_e_price = 0  # 卖出E的价格
     else:
         main_account_sell_buy_levels_triggered_atr = []
         main_account_sell_buy_levels_consecutive_days = []
@@ -431,6 +434,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         # 连续未创新高卖出状态变量
         main_account_no_new_high_days = 0
         main_account_last_high_price = 0
+        # 爆发卖出E后的买回机制状态变量
+        main_account_outbreak_sell_e_active = False
+        main_account_outbreak_sell_e_price = 0
 
     # 收集所有输出内容
     output_lines = []
@@ -955,6 +961,40 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             # 更新持仓期间最高价
                             if close_price > main_account_holding_high:
                                 main_account_holding_high = close_price
+        
+        # 爆发卖出E后的买回逻辑
+        # 当处于卖出E模式且没有其他爆发卖出触发时，价格高于卖出E价格则买回
+        if main_account_outbreak_sell_e_active and not main_account_outbreak_buy_active and not main_account_outbreak_position_buy_active:
+            if close_price > main_account_outbreak_sell_e_price:
+                # 价格高于卖出E价格，买回
+                new_position = int(cash / close_price / 100) * 100
+                if new_position >= 100 and cash >= new_position * close_price:
+                    cost = new_position * close_price
+                    cash -= cost
+                    main_account_sell_buy_price = close_price
+                    main_account_sell_buy_position += new_position
+                    main_account_outbreak_buy_active = True
+                    main_account_outbreak_buy_price = close_price
+                    # 初始化持仓期间最高价
+                    main_account_holding_high = close_price
+                    # 初始化连续未创新高计数
+                    main_account_last_high_price = close_price
+                    main_account_no_new_high_days = 0
+                    # 关闭卖出E模式
+                    main_account_outbreak_sell_e_active = False
+                    main_account_outbreak_sell_e_price = 0
+                    trade_count += 1
+                    trades.append({
+                        'day': day_num,
+                        'date': date_str,
+                        'action': '买入',
+                        'price': close_price,
+                        'shares': new_position,
+                        'type': '卖出E买回'
+                    })
+                    action = f"主账户卖出E买回@{close_price:.2f} 持仓{main_account_sell_buy_position}"
+                    if holding_start_date is None:
+                        holding_start_date = date_str
         
         # 标准爆发买入或启动分仓买入模式
         if ENABLE_MAIN_ACCOUNT_OUTBREAK_BUY and not main_account_outbreak_buy_active and not main_account_outbreak_position_buy_active:
@@ -1497,6 +1537,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             if condition_e:
                                 reasons.append('E')
                             outbreak_sell_reason = '+'.join(reasons)
+                            
+                            # 检查是否触发了A/B/C/D条件（非纯E卖出）
+                            # 如果处于卖出E模式且触发了其他条件，则关闭卖出E模式
+                            if main_account_outbreak_sell_e_active and (condition_a or condition_b or condition_c or condition_d):
+                                main_account_outbreak_sell_e_active = False
+                                main_account_outbreak_sell_e_price = 0
 
                 current_atr = row['atr'] if pd.notna(row['atr']) else 0
                 # 爆发买入锁定：当爆发买入激活时，只允许多止盈卖出和止损卖出，跳过追跌卖档位逻辑
@@ -1613,6 +1659,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             # 重置连续未创新高计数
                             main_account_no_new_high_days = 0
                             main_account_last_high_price = 0
+                            # 检查是否是纯条件E卖出（只有E，没有A/B/C/D）
+                            if stop_loss_triggered and outbreak_sell_reason == 'E':
+                                # 纯条件E卖出，启动买回模式
+                                main_account_outbreak_sell_e_active = True
+                                main_account_outbreak_sell_e_price = close_price
 
         # 如果持仓全部卖出，重置持仓最高价
         total_position = position + main_account_sell_buy_position
