@@ -64,7 +64,7 @@ NORMAL_TAKE_PROFIT_RISING_DAYS = 2  # 价格趋势连续上升天数阈值，达
 
 # 普通买入A与卖出A的连续N天未创新高卖出配置（独立参数）
 ENABLE_NORMAL_NO_NEW_HIGH_SELL = True  # 是否启用普通买入A与卖出A的连续N天未创新高卖出机制
-NORMAL_NO_NEW_HIGH_DAYS = 6  # 连续多少天未创新高就卖出（默认6天）
+NORMAL_NO_NEW_HIGH_DAYS = 5  # 连续多少天未创新高就卖出（默认6天）
 NORMAL_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收盘价低于持仓最高价的该比例时视为未创新高（默认0.99即低于最高价1%）
 
 # 普通卖出后的买回配置（防止卖了然后涨了）
@@ -752,7 +752,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     
                     # 激活普通卖出后的买回模式（防止卖了然后涨了）
                     # 只有因连续N天未创新高卖出的情况才启用买回机制
-                    if ENABLE_NORMAL_NO_NEW_HIGH_SELL and "连续" in sell_reason and "未创新高" in sell_reason:
+                    # 注意：如果处于爆发买入状态，不启用普通买回机制（避免冲突）
+                    if ENABLE_NORMAL_NO_NEW_HIGH_SELL and "连续" in sell_reason and "未创新高" in sell_reason and not main_account_outbreak_buy_active:
                         normal_sell_buyback_active = True
                         normal_sell_buyback_price = sell_price
 
@@ -782,8 +783,29 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             normal_take_profit_cash_locked = 0
                     
                     # 卖出时同步重置爆发买入状态（解锁）
-                    # 注意：在卖出E锁定模式下不重置，保持锁定状态直到触发其他爆发卖出条件
+                    # 注意：只有在非卖出E锁定模式下才重置爆发买入状态
+                    # 卖出E锁定模式下，需要等待真正的卖出A（波动率卖出）来解锁
                     if main_account_outbreak_buy_active and not main_account_outbreak_sell_e_active:
+                        main_account_outbreak_buy_active = False
+                        main_account_outbreak_buy_price = 0
+                        main_account_outbreak_buy_consecutive_days = 0
+                        main_account_outbreak_sell_high = 0
+                        # 重置爆发模式止盈卖出状态
+                        main_account_outbreak_take_profit_active = False
+                        main_account_outbreak_take_profit_prev_close = 0
+                        # 重置分仓买入状态
+                        main_account_outbreak_position_buy_active = False
+                        main_account_outbreak_position_buy_count = 0
+                        main_account_outbreak_position_buy_prices = []
+                        main_account_outbreak_position_buy_pending = False
+                        main_account_outbreak_position_buy_trigger_price = 0
+                    # 在卖出E锁定模式下，只有真正的卖出A（波动率卖出）才能解锁
+                    # 检查是否是纯粹的波动率卖出（比率卖出，不带其他后缀）且处于卖出E锁定模式
+                    elif main_account_outbreak_sell_e_active and sell_reason == "比率卖出":
+                        # 真正的卖出A到达，解锁卖出E锁定模式
+                        main_account_outbreak_sell_e_active = False
+                        main_account_outbreak_sell_e_price = 0
+                        # 同时重置爆发买入状态
                         main_account_outbreak_buy_active = False
                         main_account_outbreak_buy_price = 0
                         main_account_outbreak_buy_consecutive_days = 0
@@ -817,7 +839,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             
             # 普通卖出后的买回逻辑（防止卖了然后涨了）
             # 当价格高于卖出价格的设定比例时买回
-            if position == 0 and normal_sell_buyback_active and normal_sell_buyback_price > 0:
+            # 注意：如果处于爆发买入状态，不触发普通买回A（避免冲突）
+            if position == 0 and normal_sell_buyback_active and normal_sell_buyback_price > 0 and not main_account_outbreak_buy_active:
                 buyback_threshold_price = normal_sell_buyback_price * (1 + NORMAL_SELL_BUYBACK_THRESHOLD)
                 if close_price >= buyback_threshold_price:
                     buy_price = close_price
@@ -1145,7 +1168,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         # 爆发卖出E后的买回逻辑
         # 当处于卖出E锁定模式时，价格高于卖出E价格一定百分比则买回
         # 注意：锁定模式下main_account_outbreak_buy_active保持True，但持仓为0
-        if main_account_outbreak_sell_e_active and main_account_outbreak_buy_active and main_account_sell_buy_position == 0:
+        # 注意：只有在普通持仓为0时才允许卖出E买回（避免与卖出A后的状态冲突）
+        if main_account_outbreak_sell_e_active and main_account_outbreak_buy_active and main_account_sell_buy_position == 0 and position == 0:
             # 计算买回阈值价格（卖出E价格 * (1 + 阈值百分比)）
             buyback_threshold_price = main_account_outbreak_sell_e_price * (1 + MAIN_ACCOUNT_OUTBREAK_SELL_E_BUYBACK_THRESHOLD)
             if close_price > buyback_threshold_price:
