@@ -105,8 +105,12 @@ MAIN_ACCOUNT_SELL_RATIOS = [0.30, 0.30, 0.25, 0.15]          # 对应卖出比�
 
 # ATR周期配置
 ATR_PERIOD = 14  # ATR计算周期，可配置为10、14、20等
-ATR_PERCENTILE_DAYS = 60  # ATR分位数计算周期（默认120天）
+ATR_PERCENTILE_DAYS = 60  # ATR分位数计算周期（默认60天）
 ATR_PERCENTILE_TREND_THRESHOLD = 0.005 # ATR分位数趋势判断阈值（5%），超过此变化才认为是趋势变化
+
+# 价格分位配置
+PRICE_PERCENTILE_DAYS = 120  # 价格分位计算周期（默认120天，可配置为60、90、120等）
+PRICE_PERCENTILE_MIN_PERIODS = 60  # 价格分位计算最小周期数（默认60天）
 
 # 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
 MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
@@ -248,6 +252,11 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
             df.loc[i, 'atr_pct_trend'] = '↑'  # 上升
         else:
             df.loc[i, 'atr_pct_trend'] = '↓'  # 下降
+    
+    # 计算价格分位（收盘价在过去N天中的百分位，N可配置）
+    df['price_pct'] = df['收盘'].rolling(window=PRICE_PERCENTILE_DAYS, min_periods=PRICE_PERCENTILE_MIN_PERIODS).apply(
+        lambda x: (x.iloc[-1] - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0.5, raw=False
+    )
     
     # 计算收盘价格趋势（使用5日移动平均，阈值1%）
     
@@ -486,7 +495,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     log_print(f"卖出条件: 波动率>0且降低时，降至前一天{SELL_RATIO_THRESHOLD*100:.0f}%以下则全卖")
     log_print(f"{'='*165}\n")
 
-    header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'MA20':>8} {'ATR'+str(ATR_PERIOD):>8} {'波动率':>8} {'价ATR倍':>8} {'atr_pct':>8} {'趋势':>6} {'价趋势':>6} {'5日ATR平均':>8} {'10日最低价ATR倍数':>16} {f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高':>8} {'持仓最高':>8}   {'操作':<30} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'MA20':>8} {'ATR'+str(ATR_PERIOD):>8} {'波动率':>8} {'价ATR倍':>8} {'atr_pct':>8} {'趋势':>6} {f'价分位{PRICE_PERCENTILE_DAYS}':>8} {'5日ATR平均':>8} {'10日最低价ATR倍数':>16} {f'{MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS}日最高':>8} {'持仓最高':>8}   {'操作':<30} {'持仓':>8} {'市值':>12}"
     log_print(header)
     log_print("-" * 185)
     
@@ -1592,12 +1601,17 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             # ========================================
             # 追买机制：基于跌幅买入的追加买入
             # 逻辑：价格每相对于上一次跌幅买入价格降低一定幅度，就继续买入
+            # 注意：如果价格趋势向下（close_trend == '↓'），则不追买，等待下跌结束
             # ========================================
+            # 获取价格趋势
+            close_trend = row['close_trend'] if pd.notna(row['close_trend']) else ''
+            
             if (ENABLE_MAIN_ACCOUNT_CHASE_BUY and 
                 main_account_sell_buy_position > 0 and 
                 main_account_chase_buy_last_price > 0 and 
                 not has_buy_today and
-                main_account_chase_buy_count < MAIN_ACCOUNT_CHASE_BUY_MAX_COUNT):
+                main_account_chase_buy_count < MAIN_ACCOUNT_CHASE_BUY_MAX_COUNT and
+                close_trend != '↓'):  # 价格趋势向下时不追买，等待下跌结束
                 
                 # 计算当前价格相对于上一次买入价格的跌幅
                 price_drop_from_last = (main_account_chase_buy_last_price - close_price) / main_account_chase_buy_last_price
@@ -1975,8 +1989,8 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         atr_pct_str = f"{row['atr_pct']*100:.1f}%" if pd.notna(row['atr_pct']) else "N/A"
         # atr_pct趋势列
         atr_pct_trend_str = row['atr_pct_trend'] if pd.notna(row['atr_pct_trend']) else ""
-        # 收盘价格趋势列
-        close_trend_str = row['close_trend'] if pd.notna(row['close_trend']) else ""
+        # 价格分位列（显示为百分比，周期可配置）
+        price_pct_str = f"{row['price_pct']*100:.1f}%" if pd.notna(row['price_pct']) else "N/A"
         # 计算5日ATR平均
         five_day_atr_avg_str = f"{row['5日价ATR平均']:.2f}" if pd.notna(row['5日价ATR平均']) else "N/A"
         # 10日最低ATR倍数
@@ -1988,7 +2002,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         total_position = position + main_account_sell_buy_position
         holding_high_str = f"{main_account_holding_high:.2f}" if total_position > 0 and main_account_holding_high > 0 else "N/A"
 
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr_str:>8} {volatility_str:>8} {price_atr_ratio_str:>8} {atr_pct_str:>8} {atr_pct_trend_str:>6} {close_trend_str:>6} {five_day_atr_avg_str:>8} {ten_day_low_atr_str:>12} {n_day_high_str:>8} {holding_high_str:>8}   {action:<30} {position_str:>8} {market_value:>12,.2f}")
+        log_print(f"{day_num:<5} {date_str:<12} {close_price:>8.2f} {ma20_str:>8} {atr_str:>8} {volatility_str:>8} {price_atr_ratio_str:>8} {atr_pct_str:>8} {atr_pct_trend_str:>6} {price_pct_str:>8} {five_day_atr_avg_str:>8} {ten_day_low_atr_str:>12} {n_day_high_str:>8} {holding_high_str:>8}   {action:<30} {position_str:>8} {market_value:>12,.2f})")
     
     # 计算最终收益（主仓 + 主账户区间仓位）
     final_position = position
