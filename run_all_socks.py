@@ -9,6 +9,7 @@ import json
 import pandas as pd
 import subprocess
 import io
+import time
 import argparse
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
@@ -337,6 +338,9 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
 
         if total_return is None:
             continue
+        
+        # 每只股票回测后暂停0.5秒，降低CPU负载
+        time.sleep(0.5)
 
         result = {
             'stock_code': stock_code,
