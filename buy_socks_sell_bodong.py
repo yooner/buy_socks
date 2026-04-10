@@ -55,12 +55,6 @@ SELL_A_HIGH_DROP_RATIO = 0.90  # 收盘价低于N日高价的该比例时卖出�
 # 持仓期间最高价卖出条件：当收盘价低于持仓期间最高价的设定百分比时卖出
 SELL_A_HOLDING_HIGH_DROP_RATIO = 0.50  # 收盘价低于持仓期间最高价的该比例时卖出（默认0.07即下跌7%）
 
-# 普通买入A与卖出A的止盈机制配置
-ENABLE_NORMAL_TAKE_PROFIT = False  # 是否启用普通买入A与卖出A的止盈机制
-NORMAL_TAKE_PROFIT_LEVELS = [0.10, 0.20, 0.30, 0.40]  # 止盈档位（10%, 20%, 30%, 40%）
-NORMAL_TAKE_PROFIT_RATIOS = [0.10, 0.20, 0.30, 0.40]  # 各档位卖出比例（10%, 20%, 30%, 40%）
-NORMAL_TAKE_PROFIT_RISING_DAYS = 2  # 价格趋势连续上升天数阈值，达到该天数则延迟卖出
-
 # 普通买入A与卖出A的连续N天未创新高卖出配置（独立参数）
 ENABLE_NORMAL_NO_NEW_HIGH_SELL = True  # 是否启用普通买入A与卖出A的连续N天未创新高卖出机制
 NORMAL_NO_NEW_HIGH_DAYS = 5  # 连续多少天未创新高就卖出（默认6天）
@@ -85,8 +79,9 @@ ENABLE_MAIN_ACCOUNT_CHASE_BUY = True  # 是否启用追买机制
 MAIN_ACCOUNT_CHASE_BUY_PRICE_DROP = 0.02  # 价格相对于上一次跌幅买入价格降低多少触发追买（默认0.02即2%）
 
 # 跌幅买入价格分位检查配置（新逻辑）
-ENABLE_DROP_BUY_PRICE_PCT_CHECK = False  # 是否启用跌幅买入价格分位检查
+ENABLE_DROP_BUY_PRICE_PCT_CHECK = True  # 是否启用跌幅买入价格分位检查
 DROP_BUY_PRICE_PCT_CHECK_THRESHOLD = 0.00  # 价格分位检查阈值（默认30%，超过此值才买入）
+FORCE_FULL_POSITION_BUY = True  # 是否强制全仓买入（True时忽略价格分位计算，直接100%仓位买入）
 MAIN_ACCOUNT_CHASE_BUY_RATIO = 0.20  # 追买比例（默认20%）
 MAIN_ACCOUNT_CHASE_BUY_MAX_COUNT = 5  # 最大追买次数（防止无限追买）
 # 基于价ATR倍数的买入配置
@@ -94,9 +89,9 @@ MAIN_ACCOUNT_BUY_ATR_LEVELS = [-2.8, -4.0, -5.0]  # 买入触发价ATR倍数阈�
 MAIN_ACCOUNT_BUY_ATR_CONSECUTIVE_DAYS = [2, 1, 1]  # 各档位需要的连续天数（买1需连续3天满足条件，买2买3只需1天）
 # 买入比例配置
 # 基于价ATR倍数的买入比例配置
-MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.95, 0.80, 1.0]      # 对应买入比例（20%, 30%, 50%）
+MAIN_ACCOUNT_BUY_ATR_RATIOS = [0.80, 0.80, 1.0]      # 对应买入比例（20%, 30%, 50%）
 # 基于跌幅的买入比例配置
-MAIN_ACCOUNT_BUY_DROP_RATIOS = [0.95, 0.60]      # 对应买入比例（20%, 30%, 50%）
+MAIN_ACCOUNT_BUY_DROP_RATIOS = [0.30, 0.60]      # 对应买入比例（20%, 30%, 50%）
 
 # 主账户区间交易分批卖出配置
 # 基于价ATR倍数的卖出配置（对应基于价ATR倍数的买入）
@@ -112,8 +107,8 @@ ATR_PERCENTILE_DAYS = 60  # ATR分位数计算周期（默认60天）
 ATR_PERCENTILE_TREND_THRESHOLD = 0.005 # ATR分位数趋势判断阈值（5%），超过此变化才认为是趋势变化
 
 # 价格分位配置
-PRICE_PERCENTILE_DAYS = 120  # 价格分位计算周期（默认120天，可配置为60、90、120等）
-PRICE_PERCENTILE_MIN_PERIODS = 60  # 价格分位计算最小周期数（默认60天）
+PRICE_PERCENTILE_DAYS = 180  # 价格分位计算周期（默认120天，可配置为60、90、120等）
+PRICE_PERCENTILE_MIN_PERIODS = 30  # 价格分位计算最小周期数（默认60天）
 
 # 主账户区间交易：剩余仓位小于等于该阈值时直接清仓，避免长期残仓
 MAIN_ACCOUNT_MIN_REMAIN_SHARES_TO_CLEAR = 300
@@ -127,11 +122,7 @@ ENABLE_MAIN_ACCOUNT_OUTBREAK_POSITION_BUY = True  # 是否启用分仓买入（A
 MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_PERCENTILE_THRESHOLD = 0.40  # 分位阈值（默认50%）
 MAIN_ACCOUNT_OUTBREAK_POSITION_BUY_COUNT = 4  # 分仓数量（默认4仓）
 
-# 卖出A与买入A之间价格分位买卖配置
-ENABLE_PRICE_PERCENTILE_BETWEEN_SELL_BUY_A = False  # 是否启用价格分位买卖
-PRICE_PERCENTILE_BUY_THRESHOLD = 0.00  # 买入触发价格分位阈值（默认0%，小于等于此值时买入）
-PRICE_PERCENTILE_BUY_RATIO = 0.50  # 买入比例（默认50%）
-PRICE_PERCENTILE_SELL_THRESHOLD = 0.04  # 卖出触发价格分位阈值（默认5%，超过此值时卖出）
+
 # 爆发卖出配置
 MAIN_ACCOUNT_OUTBREAK_SELL_HIGH_DAYS = 4  # 计算最高价的周期（默认5日，可设置为3日等）
 MAIN_ACCOUNT_OUTBREAK_SELL_THRESHOLD = 0.07  # 最高价下降超过该比例才卖出（防止小幅波动）
@@ -146,11 +137,6 @@ MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收�
 
 # 卖出E后的买回配置
 MAIN_ACCOUNT_OUTBREAK_SELL_E_BUYBACK_THRESHOLD = 0.03  # 买回阈值，价格高于卖出E价格此比例时才买回（默认0.03即3%）
-
-# 爆发模式止盈卖出配置
-ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT = False  # 是否启用爆发模式止盈卖出
-MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_RATIO = 0.10  # 每次止盈卖出比例（默认10%）
-MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_DROP_THRESHOLD = 0.03  # 价格下跌阈值（默认0.025即2.5%），低于前一天价格此比例则卖出
 
 # 买入A延迟买入开关
 ENABLE_BUY_A_DELAYED = True  # 是否启用延迟买入
@@ -394,13 +380,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     
     # 卖出A延迟卖出状态变量
     sell_a_delayed_pending = False  # 是否有待卖A（当价格高于MA20阈值时延迟卖出）
-    
-    # 普通买入A与卖出A的止盈状态变量
-    normal_take_profit_levels_triggered = [False] * len(NORMAL_TAKE_PROFIT_LEVELS)  # 各止盈档位是否已触发
-    normal_take_profit_buy_price = 0  # 买入A的价格（用于计算止盈比例）
-    normal_take_profit_rising_days = 0  # 价格连续上升天数
-    normal_take_profit_cash_locked = 0  # 止盈卖出后锁定的资金（模拟资金为0的效果）
-    
+
     # 普通买入A与卖出A的连续N天未创新高卖出状态变量
     normal_no_new_high_days = 0  # 连续未创新高天数
     normal_last_high_price = 0  # 持仓期间最高价
@@ -683,66 +663,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 if normal_no_new_high_days >= NORMAL_NO_NEW_HIGH_DAYS:
                     should_sell = True
                     sell_reason = f"比率卖出(连续{normal_no_new_high_days}天未创新高)"
-            
-            # 普通买入A与卖出A的止盈逻辑
-            if ENABLE_NORMAL_TAKE_PROFIT and position > 0 and normal_take_profit_buy_price > 0:
-                # 计算当前盈利比例
-                current_profit_ratio = (close_price - normal_take_profit_buy_price) / normal_take_profit_buy_price
-                # 检查价格趋势（是否连续上升）
-                if i > 0:
-                    prev_close = df.iloc[i-1]['收盘']
-                    if close_price > prev_close:
-                        normal_take_profit_rising_days += 1
-                    else:
-                        normal_take_profit_rising_days = 0
-                
-                # 检查各止盈档位
-                for level_idx in range(len(NORMAL_TAKE_PROFIT_LEVELS)):
-                    if not normal_take_profit_levels_triggered[level_idx]:
-                        if current_profit_ratio >= NORMAL_TAKE_PROFIT_LEVELS[level_idx]:
-                            # 达到止盈档位
-                            # 如果价格趋势连续上升达到阈值，则延迟卖出
-                            if normal_take_profit_rising_days >= NORMAL_TAKE_PROFIT_RISING_DAYS:
-                                # 价格连续上升，延迟卖出，继续持有
-                                pass
-                            else:
-                                # 执行止盈卖出
-                                sell_ratio = NORMAL_TAKE_PROFIT_RATIOS[level_idx]
-                                sell_shares = int(position * sell_ratio / 100) * 100
-                                if sell_shares >= 100:
-                                    sell_price = close_price
-                                    sell_value = sell_shares * sell_price
-                                    profit = (sell_price - normal_take_profit_buy_price) * sell_shares
-                                    cash += sell_value
-                                    position -= sell_shares
-                                    normal_take_profit_levels_triggered[level_idx] = True
-                                    action = f"止盈卖出{level_idx+1}@{sell_price:.2f}({sell_ratio*100:.0f}%)"
-                                    trades.append({
-                                        'day': day_num,
-                                        'date': date_str,
-                                        'action': '卖出',
-                                        'price': sell_price,
-                                        'shares': sell_shares,
-                                        'profit': profit,
-                                        'type': f'止盈{level_idx+1}'
-                                    })
-                                    # 如果全部卖出，重置状态并锁定资金
-                                    if position <= 0:
-                                        position = 0
-                                        buy_price = 0
-                                        normal_take_profit_buy_price = 0
-                                        volatility_declining_days = 0
-                                        holding_start_date = None
-                                        buy_a_delayed_pending = False
-                                        buy_a_marked = False
-                                        buy_a_pending_price = 0.0
-                                        buy_a_below_ma20_atr_hit_count = 0
-                                        sell_a_delayed_pending = False
-                                        # 止盈全部卖出后，锁定资金（模拟资金为0，防止爆发买入触发）
-                                        normal_take_profit_cash_locked = cash
-                                        cash = 0
-                                    break  # 每次只处理一个档位
-            
+
             # 卖出逻辑
             if position > 0:
                 if should_sell:
@@ -807,11 +728,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 重置追买状态
                         main_account_chase_buy_last_price = 0
                         main_account_chase_buy_count = 0
-                        # 普通卖出时解锁止盈锁定的资金
-                        if normal_take_profit_cash_locked > 0:
-                            cash += normal_take_profit_cash_locked
-                            normal_take_profit_cash_locked = 0
-                    
+
                     # 卖出时同步重置爆发买入状态（解锁）
                     # 注意：只有在非卖出E锁定模式下才重置爆发买入状态
                     # 卖出E锁定模式下，需要等待真正的卖出A（波动率卖出）来解锁
@@ -978,11 +895,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             volatility_declining_days = 0
                         # 重置卖出A延迟卖出状态（新买入周期开始）
                             sell_a_delayed_pending = False
-                            # 重置普通买入A与卖出A的止盈状态
-                            if ENABLE_NORMAL_TAKE_PROFIT:
-                                normal_take_profit_levels_triggered = [False] * len(NORMAL_TAKE_PROFIT_LEVELS)
-                                normal_take_profit_buy_price = buy_price
-                                normal_take_profit_rising_days = 0
                             # 重置普通买入A与卖出A的连续N天未创新高卖出状态
                             if ENABLE_NORMAL_NO_NEW_HIGH_SELL:
                                 normal_no_new_high_days = 0
@@ -1116,11 +1028,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         buy_a_below_ma20_atr_hit_count = 0
                         # 重置卖出A延迟卖出状态（新买入周期开始）
                         sell_a_delayed_pending = False
-                        # 重置普通买入A与卖出A的止盈状态
-                        if ENABLE_NORMAL_TAKE_PROFIT:
-                            normal_take_profit_levels_triggered = [False] * len(NORMAL_TAKE_PROFIT_LEVELS)
-                            normal_take_profit_buy_price = buy_price
-                            normal_take_profit_rising_days = 0
                         # 重置普通买入A与卖出A的连续N天未创新高卖出状态
                         if ENABLE_NORMAL_NO_NEW_HIGH_SELL:
                             normal_no_new_high_days = 0
@@ -1406,7 +1313,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 drop_idx = drop_buy_price_pct_lock_level
                 if drop_idx >= 0:
                     if drop_buy_price_pct_lock_type == 'ATR' and ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
-                        ratio = MAIN_ACCOUNT_BUY_ATR_RATIOS[drop_idx]
+                        # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                        if FORCE_FULL_POSITION_BUY:
+                            ratio = 1.0
+                        else:
+                            price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                            ratio = 1.0 - price_pct
                         buy_amount = cash * ratio
                         new_position = int(buy_amount / close_price / 100) * 100
                         if new_position >= 100 and cash >= new_position * close_price:
@@ -1436,7 +1348,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             if holding_start_date is None:
                                 holding_start_date = date_str
                     elif drop_buy_price_pct_lock_type == 'DROP':
-                        ratio = MAIN_ACCOUNT_BUY_DROP_RATIOS[drop_idx]
+                        # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                        if FORCE_FULL_POSITION_BUY:
+                            ratio = 1.0
+                        else:
+                            price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                            ratio = 1.0 - price_pct
                         buy_amount = cash * ratio
                         new_position = int(buy_amount / close_price / 100) * 100
                         if new_position >= 100 and cash >= new_position * close_price:
@@ -1566,7 +1483,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             continue
                         
                         # 趋势变平或变高，执行买入
-                        ratio = MAIN_ACCOUNT_BUY_ATR_RATIOS[drop_idx]
+                        # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                        if FORCE_FULL_POSITION_BUY:
+                            ratio = 1.0
+                        else:
+                            price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                            ratio = 1.0 - price_pct
                         
                         buy_amount = main_account_initial_cash * ratio
                         buy_amount = min(buy_amount, cash)
@@ -1653,9 +1575,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             drop_buy_delayed_type = 'DROP'
                             action = f"主账户待跌幅买{drop_idx + 1}@{close_price:.2f}(趋势下降)"
                         continue
-                    
+
                     # 趋势变平或变高，执行买入
-                    ratio = MAIN_ACCOUNT_BUY_DROP_RATIOS[drop_idx]
+                    # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                    if FORCE_FULL_POSITION_BUY:
+                        ratio = 1.0
+                    else:
+                        price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                        ratio = 1.0 - price_pct
                     buy_amount = main_account_initial_cash * ratio
                     buy_amount = min(buy_amount, cash)
                     new_position = int(buy_amount / close_price / 100) * 100
@@ -1713,7 +1640,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if drop_buy_delayed_type == 'ATR' and ENABLE_MAIN_ACCOUNT_BUY_BY_ATR:
                         drop_idx = drop_buy_delayed_level
                         if drop_idx >= 0 and not main_account_sell_buy_levels_triggered_atr[drop_idx]:
-                            ratio = MAIN_ACCOUNT_BUY_ATR_RATIOS[drop_idx]
+                            # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                            if FORCE_FULL_POSITION_BUY:
+                                ratio = 1.0
+                            else:
+                                price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                                ratio = 1.0 - price_pct
                             buy_amount = main_account_initial_cash * ratio
                             buy_amount = min(buy_amount, cash)
                             new_position = int(buy_amount / close_price / 100) * 100
@@ -1747,7 +1679,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     elif drop_buy_delayed_type == 'DROP':
                         drop_idx = drop_buy_delayed_level
                         if drop_idx >= 0 and not main_account_sell_buy_levels_triggered_drop[drop_idx]:
-                            ratio = MAIN_ACCOUNT_BUY_DROP_RATIOS[drop_idx]
+                            # 买入比例 = 1 - 价格分位（强制全仓时直接使用100%）
+                            if FORCE_FULL_POSITION_BUY:
+                                ratio = 1.0
+                            else:
+                                price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                                ratio = 1.0 - price_pct
                             buy_amount = main_account_initial_cash * ratio
                             buy_amount = min(buy_amount, cash)
                             new_position = int(buy_amount / close_price / 100) * 100
@@ -1835,87 +1772,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         action = f"主账户追买{main_account_chase_buy_count}@{close_price:.2f}(较上次跌{price_drop_from_last*100:.1f}%) 持仓{main_account_sell_buy_position}"
                         has_buy_today = True
 
-            # ========================================
-            # 卖出A与买入A之间价格分位买卖逻辑
-            # 买入条件：价格分位 <= PRICE_PERCENTILE_BUY_THRESHOLD（默认0%），直接买入50%仓位
-            # 卖出条件：
-            # 1. 价格分位 > PRICE_PERCENTILE_SELL_THRESHOLD（默认5%），全部卖出
-            # 2. 价格分位持平或上升，但价格下降，全部卖出（防止持续下跌）
-            # 注意：此逻辑只在卖出A与买入A之间有效，如果等到买入A还未卖出，则转入买入A
-            # 注意：价格分位买入使用独立持仓，不影响其他买入方式的持仓
-            # ========================================
-            if ENABLE_PRICE_PERCENTILE_BETWEEN_SELL_BUY_A and position == 0 and not buy_a_delayed_pending:
-                price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 1.0
-                
-                # 买入条件：价格分位 <= 买入阈值，且未买入过，则直接买入
-                if price_pct <= PRICE_PERCENTILE_BUY_THRESHOLD and not main_account_price_pct_buy_triggered and cash > 0 and not has_buy_today:
-                    buy_amount = main_account_initial_cash * PRICE_PERCENTILE_BUY_RATIO
-                    buy_amount = min(buy_amount, cash)
-                    new_position = int(buy_amount / close_price / 100) * 100
-                    
-                    if new_position >= 100 and cash >= new_position * close_price:
-                        cost = new_position * close_price
-                        cash -= cost
-                        # 更新价格分位独立持仓
-                        main_account_price_pct_position = new_position
-                        main_account_price_pct_cost = close_price
-                        # 初始化持仓期间最高价
-                        main_account_price_pct_high = close_price
-                        # 同时更新总持仓（用于显示和计算）
-                        main_account_sell_buy_position += new_position
-                        main_account_price_pct_buy_triggered = True
-                        trade_count += 1
-                        trades.append({
-                            'day': day_num,
-                            'date': date_str,
-                            'action': '买入',
-                            'price': close_price,
-                            'shares': new_position,
-                            'type': '价分位买入'
-                        })
-                        action = f"主账户价分位买入@{close_price:.2f}(分位{price_pct*100:.1f}%) 持仓{main_account_sell_buy_position}"
-                        has_buy_today = True
-                
-                # 卖出逻辑：满足任一条件即卖出
-                # 条件1：价格分位 > 卖出阈值
-                # 条件2：价格从持仓期间最高价下跌超过阈值（跌价防套）
-                if main_account_price_pct_position > 0 and main_account_price_pct_buy_triggered:
-                    # 更新持仓期间最高价
-                    if close_price > main_account_price_pct_high:
-                        main_account_price_pct_high = close_price
-                    
-                    # 计算从最高价的下跌幅度
-                    drop_from_high = (main_account_price_pct_high - close_price) / main_account_price_pct_high if main_account_price_pct_high > 0 else 0
-                    
-                    # 判断卖出条件
-                    sell_condition1 = price_pct > PRICE_PERCENTILE_SELL_THRESHOLD
-                    sell_condition2 = drop_from_high > 0.03  # 从最高价下跌超过3%就卖出
-                    
-                    if sell_condition1 or sell_condition2:
-                        # 全部卖出价格分位买入的持仓
-                        sell_position = main_account_price_pct_position
-                        sell_value = sell_position * close_price
-                        cash += sell_value
-                        trade_count += 1
-                        sell_type = '价分位卖出' if sell_condition1 else '价分位卖出（跌价防套）'
-                        trades.append({
-                            'day': day_num,
-                            'date': date_str,
-                            'action': '卖出',
-                            'price': close_price,
-                            'shares': sell_position,
-                            'type': sell_type
-                        })
-                        # 更新总持仓
-                        main_account_sell_buy_position -= sell_position
-                        sell_reason = f"分位{price_pct*100:.1f}%" if sell_condition1 else f"较持仓高点跌{drop_from_high*100:.1f}%"
-                        action = f"主账户价分位卖出@{close_price:.2f}({sell_reason}) 持仓{main_account_sell_buy_position}"
-                        # 重置价格分位状态
-                        main_account_price_pct_position = 0
-                        main_account_price_pct_cost = 0
-                        main_account_price_pct_buy_triggered = False
-                        main_account_price_pct_high = 0
-
             # 在卖出E锁定模式下，即使持仓为0也要检测解锁条件
             # 需要在持仓检查之前执行，确保锁定模式能正常解锁
             if main_account_outbreak_sell_e_active and main_account_outbreak_buy_active:
@@ -1975,46 +1831,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 # 爆发买入锁定：当爆发买入激活时，只检查爆发卖出条件和止盈卖出条件，跳过其他卖出机制
                 if main_account_outbreak_buy_active:
                     current_price_atr = row['价ATR倍'] if pd.notna(row['价ATR倍']) else 0
-                    
-                    # ========================================
-                    # 爆发模式止盈卖出逻辑（新逻辑）
-                    # 逻辑：
-                    # 1. 当分位为100%且趋势不是上升时，激活止盈模式
-                    # 2. 第二天如果价格低于前一天价格的阈值（默认4%），则卖出10%
-                    # 3. 反复如此直到到达爆发卖出点
-                    # ========================================
-                    if ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT:
-                        close_trend = row['close_trend'] if pd.notna(row['close_trend']) else ''
-                        atr_pct = row['atr_pct'] if pd.notna(row['atr_pct']) else 0
-                        
-                        # 检查是否满足止盈模式激活条件：分位100%且趋势非上升
-                        if not main_account_outbreak_take_profit_active:
-                            if atr_pct >= 1.0 and close_trend != '↑':
-                                # 激活止盈模式，记录前一天收盘价
-                                main_account_outbreak_take_profit_active = True
-                                main_account_outbreak_take_profit_prev_close = close_price
-                        else:
-                            # 已处于止盈模式，检查是否满足卖出条件
-                            if main_account_outbreak_take_profit_prev_close > 0:
-                                # 计算价格跌幅
-                                price_drop_pct = (main_account_outbreak_take_profit_prev_close - close_price) / main_account_outbreak_take_profit_prev_close
-                                
-                                if price_drop_pct >= MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_PRICE_DROP_THRESHOLD:
-                                    # 价格跌幅超过阈值，执行止盈卖出
-                                    take_profit_sell_shares = int(main_account_sell_buy_position * MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_RATIO)
-                                    take_profit_sell_shares = min(take_profit_sell_shares, main_account_sell_buy_position)
-                                    if take_profit_sell_shares > 0:
-                                        take_profit_triggered = True
-                                        take_profit_levels_triggered.append(0)
-                                
-                                # 更新前一天收盘价（无论是否卖出都更新）
-                                main_account_outbreak_take_profit_prev_close = close_price
-                            
-                            # 检查是否继续满足止盈模式条件（分位100%且趋势非上升）
-                            if atr_pct < 1.0 or close_trend == '↑':
-                                # 不再满足条件，退出止盈模式
-                                main_account_outbreak_take_profit_active = False
-                                main_account_outbreak_take_profit_prev_close = 0
                     
                     # ========================================
                     # 爆发模式止损卖出逻辑（原有逻辑）
