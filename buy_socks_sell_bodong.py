@@ -72,6 +72,11 @@ BUY_A_ATR_PERCENTILE_MIN = 0.05  # 买入A时atr分位最小值（默认10%）
 BUY_A_PRICE_PERCENTILE_MIN = 0.00  # 买入A时价格分位最小值（默认20%）
 BUY_A_PRICE_RISE_THRESHOLD = 0.03  # 价格相对于买入A标记当天上涨的阈值（默认3%），超过此值即使ATR分位不足也买入
 
+# 买入A后ATR分位未突破卖出配置
+ENABLE_BUY_A_ATR_BREAKOUT_SELL = True  # 是否启用买入A后ATR分位未突破卖出机制
+BUY_A_ATR_BREAKOUT_DAYS = 4  # 连续多少天ATR分位未突破阈值就卖出（默认3天）
+BUY_A_ATR_BREAKOUT_THRESHOLD = 0.07  # ATR分位突破阈值（默认10%），低于此值视为未突破
+
 # 主账户在卖出A与买入A之间的分批买入卖出开关
 ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING = True  # 设置为True启用：主账户在卖出A与买入A之间分批买入卖出
 
@@ -388,6 +393,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     normal_no_new_high_days = 0  # 连续未创新高天数
     normal_last_high_price = 0  # 持仓期间最高价
     
+    # 买入A后ATR分位未突破卖出状态变量
+    buy_a_atr_breakout_days = 0  # 买入A后ATR分位未突破阈值连续天数
+    buy_a_atr_breakout_triggered = False  # 是否已触发ATR分位突破卖出
+    
     # 普通卖出后的买回状态变量
     normal_sell_buyback_active = False  # 是否处于普通卖出后的买回模式
     normal_sell_buyback_price = 0  # 普通卖出价格（用于计算买回阈值）
@@ -656,6 +665,25 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 if normal_no_new_high_days >= NORMAL_NO_NEW_HIGH_DAYS:
                     should_sell = True
                     sell_reason = f"比率卖出(连续{normal_no_new_high_days}天未创新高)"
+            
+            # 买入A后ATR分位未突破卖出逻辑
+            if ENABLE_BUY_A_ATR_BREAKOUT_SELL and position > 0 and not should_sell and not buy_a_atr_breakout_triggered:
+                # 获取当前ATR分位
+                current_atr_pct = row['atr_pct'] if pd.notna(row['atr_pct']) else 0.0
+                
+                # 检查ATR分位是否突破阈值
+                if current_atr_pct >= BUY_A_ATR_BREAKOUT_THRESHOLD:
+                    # ATR分位突破阈值，重置计数器
+                    buy_a_atr_breakout_days = 0
+                else:
+                    # ATR分位未突破阈值，增加计数器
+                    buy_a_atr_breakout_days += 1
+                    
+                    # 检查是否达到连续N天未突破
+                    if buy_a_atr_breakout_days >= BUY_A_ATR_BREAKOUT_DAYS:
+                        should_sell = True
+                        buy_a_atr_breakout_triggered = True
+                        sell_reason = f"比率卖出(买入A后ATR分位连续{buy_a_atr_breakout_days}天未突破{BUY_A_ATR_BREAKOUT_THRESHOLD*100:.0f}%)"
 
             # 卖出逻辑
             if position > 0:
@@ -693,6 +721,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if ENABLE_NORMAL_NO_NEW_HIGH_SELL:
                         normal_no_new_high_days = 0
                         normal_last_high_price = 0
+                    
+                    # 重置买入A后ATR分位未突破卖出状态
+                    if ENABLE_BUY_A_ATR_BREAKOUT_SELL:
+                        buy_a_atr_breakout_days = 0
+                        buy_a_atr_breakout_triggered = False
                     
                     # 激活普通卖出后的买回模式（防止卖了然后涨了）
                     # 只有因连续N天未创新高卖出的情况才启用买回机制
@@ -885,6 +918,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             # 重置普通卖出后的买回状态（新买入周期开始）
                             normal_sell_buyback_active = False
                             normal_sell_buyback_price = 0
+                            # 重置买入A后ATR分位未突破卖出状态
+                            if ENABLE_BUY_A_ATR_BREAKOUT_SELL:
+                                buy_a_atr_breakout_days = 0
+                                buy_a_atr_breakout_triggered = False
                             if holding_start_date is None:
                                 holding_start_date = date_str
 
@@ -1041,6 +1078,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         # 重置普通卖出后的买回状态（新买入周期开始）
                         normal_sell_buyback_active = False
                         normal_sell_buyback_price = 0
+                        # 重置买入A后ATR分位未突破卖出状态
+                        if ENABLE_BUY_A_ATR_BREAKOUT_SELL:
+                            buy_a_atr_breakout_days = 0
+                            buy_a_atr_breakout_triggered = False
                         # 重置跌幅买入待买状态（遇到买入A，结束跌幅买入周期）
                         if drop_buy_delayed_pending:
                             drop_buy_delayed_pending = False
