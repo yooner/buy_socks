@@ -88,10 +88,15 @@ MAIN_ACCOUNT_BUY_LEVELS = [-0.13, -0.20]  # 买入触发跌幅（-4%, -8%, -13%�
 # 跌幅买入ATR分位检查配置
 ENABLE_DROP_BUY_ATR_PERCENTILE_CHECK = True  # 是否启用跌幅买入ATR分位检查
 DROP_BUY_ATR_PERCENTILE_MIN = 0.03  # 跌幅买入时ATR分位最小值（默认5%）
-DROP_BUY_PRICE_RISE_THRESHOLD = 0.03  # 跌幅买入时，价格相对于触发当天上涨的阈值（默认3%），超过此值即使ATR分位不足也买入
+DROP_BUY_PRICE_RISE_THRESHOLD = 0.00  # 跌幅买入时，价格相对于触发当天上涨的阈值（默认3%），超过此值即使ATR分位不足也买入
+
+# 跌幅买入天均下降百分比检查配置
+ENABLE_DROP_BUY_DAILY_DECLINE_CHECK = True  # 是否启用天均下降百分比检查
+DROP_BUY_DAILY_DECLINE_THRESHOLD = 0.08  # 天均下降百分比阈值（默认6%/天），超过此值则等待价格回升再买入
+DROP_BUY_DAILY_DECLINE_WAIT_LEVEL = 0  # 哪个档位需要等待（0=买1, 1=买2），买2直接买入不需要等待
 
 # 跌幅买入的连续N天未创新高卖出配置（与普通卖出A一样）
-ENABLE_DROP_BUY_NO_NEW_HIGH_SELL = True  # 是否启用跌幅买入的连续N天未创新高卖出机制
+ENABLE_DROP_BUY_NO_NEW_HIGH_SELL = False  # 是否启用跌幅买入的连续N天未创新高卖出机制
 DROP_BUY_NO_NEW_HIGH_DAYS = 15 # 连续多少天未创新高就卖出（默认5天）
 DROP_BUY_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收盘价低于持仓最高价的该比例时视为未创新高（默认0.99即低于最高价1%）
 FORCE_FULL_POSITION_BUY = True  # 是否强制全仓买入（True时忽略价格分位计算，直接100%仓位买入）
@@ -149,7 +154,7 @@ MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_DAYS = 6  # 连续多少天未创新高�
 MAIN_ACCOUNT_OUTBREAK_SELL_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收盘价低于持仓最高价的该比例时视为未创新高（默认0.98即低于最高价2%）
 
 # 卖出E后的买回配置
-MAIN_ACCOUNT_OUTBREAK_SELL_E_BUYBACK_THRESHOLD = 0.03  # 买回阈值，价格高于卖出E价格此比例时才买回（默认0.03即3%）
+MAIN_ACCOUNT_OUTBREAK_SELL_E_BUYBACK_THRESHOLD = 0.00  # 买回阈值，价格高于卖出E价格此比例时才买回（默认0.03即3%）
 
 # 爆发止盈模式配置（当ATR分位达到100%时逐步止盈）
 ENABLE_MAIN_ACCOUNT_OUTBREAK_TAKE_PROFIT_MODE = False  # 是否启用爆发止盈模式
@@ -418,6 +423,13 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     drop_buy_delayed_level = -1  # 待跌幅买入的档位（0=买1, 1=买2, 2=买3）
     drop_buy_delayed_type = ''  # 待跌幅买入的类型（'ATR'或'DROP'）
     drop_buy_trigger_price = 0.0  # 跌幅买入触发时的价格（用于ATR分位检查时的价格涨幅计算）
+    
+    # 天均下降百分比检查状态变量
+    drop_buy_daily_decline_wait_pending = False  # 是否处于天均下降百分比等待状态
+    drop_buy_daily_decline_wait_level = -1  # 等待的档位
+    drop_buy_daily_decline_wait_price = 0.0  # 跌幅买入时的价格（需要超过此价格才买入）
+    last_sell_price_pct = 0.0  # 上次卖出时的价格分位
+    last_sell_day = 0  # 上次卖出的交易日序号
     
     # 跌幅买入的连续N天未创新高卖出状态变量
     drop_buy_no_new_high_days = 0  # 连续未创新高天数计数器
@@ -749,6 +761,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         buy_a_atr_breakout_days = 0
                         buy_a_atr_breakout_triggered = False
                     
+                    # 记录卖出时的价格分位和日期（用于天均下降百分比检查）
+                    last_sell_price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                    last_sell_day = day_num
+                    
                     # 激活普通卖出后的买回模式（防止卖了然后涨了）
                     # 只有因连续N天未创新高卖出的情况才启用买回机制
                     # 注意：如果处于爆发买入状态，不启用普通买回机制（避免冲突）
@@ -888,6 +904,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             drop_buy_delayed_pending = False
                             drop_buy_delayed_level = -1
                             drop_buy_delayed_type = ''
+                        # 重置天均下降百分比等待状态（遇到待买A，结束等待）
+                        if drop_buy_daily_decline_wait_pending:
+                            drop_buy_daily_decline_wait_pending = False
+                            drop_buy_daily_decline_wait_level = -1
+                            drop_buy_daily_decline_wait_price = 0.0
                     else:
                         buy_price = close_price
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING and main_account_sell_buy_position > 0:
@@ -1115,6 +1136,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             drop_buy_delayed_pending = False
                             drop_buy_delayed_level = -1
                             drop_buy_delayed_type = ''
+                        # 重置天均下降百分比等待状态（遇到买入A，结束等待）
+                        if drop_buy_daily_decline_wait_pending:
+                            drop_buy_daily_decline_wait_pending = False
+                            drop_buy_daily_decline_wait_level = -1
+                            drop_buy_daily_decline_wait_price = 0.0
                         if ENABLE_MAIN_ACCOUNT_SELL_BUY_TRADING:
                             main_account_initial_cash = cash
                             main_account_drop_anchor_price = buy_price
@@ -1531,6 +1557,38 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         continue
 
                     # 趋势变平或变高，执行买入
+                    
+                    # 检查天均下降百分比（防止快速下跌时买入）
+                    if ENABLE_DROP_BUY_DAILY_DECLINE_CHECK:
+                        # 检查是否有之前的卖出记录
+                        if last_sell_day > 0:
+                            days_since_sell = day_num - last_sell_day
+                            if days_since_sell > 0:
+                                # 计算价格分位的天均下降百分比
+                                current_price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                                daily_decline_pct = (last_sell_price_pct - current_price_pct) / days_since_sell
+                                if daily_decline_pct > DROP_BUY_DAILY_DECLINE_THRESHOLD:
+                                    # 天均下降超过阈值，需要等待价格回升
+                                    # 对于需要等待的档位（买1），检查价格是否突破
+                                    if drop_idx <= DROP_BUY_DAILY_DECLINE_WAIT_LEVEL:
+                                        if not drop_buy_daily_decline_wait_pending:
+                                            drop_buy_daily_decline_wait_pending = True
+                                            drop_buy_daily_decline_wait_level = drop_idx
+                                            drop_buy_daily_decline_wait_price = close_price
+                                        # 检查价格是否超过跌幅买入时的价格
+                                        if close_price <= drop_buy_daily_decline_wait_price:
+                                            action = f"主账户待跌幅买{drop_idx + 1}@{close_price:.2f}(价格分位下降{daily_decline_pct*100:.1f}%/天>{DROP_BUY_DAILY_DECLINE_THRESHOLD*100:.0f}%等待)"
+                                            continue
+                                        # 价格突破，重置等待状态并继续买入
+                                        drop_buy_daily_decline_wait_pending = False
+                                        drop_buy_daily_decline_wait_level = -1
+                                        drop_buy_daily_decline_wait_price = 0.0
+                                    else:
+                                        # 对于不需要等待的档位（买2），如果买1正在等待，则跳过
+                                        if drop_buy_daily_decline_wait_pending:
+                                            action = f"主账户待跌幅买{drop_idx + 1}@{close_price:.2f}(买1等待中)"
+                                            continue
+                    
                     # 检查ATR分位条件
                     if ENABLE_DROP_BUY_ATR_PERCENTILE_CHECK:
                         atr_pct = row['atr_pct'] if pd.notna(row['atr_pct']) else 0.0
@@ -1618,7 +1676,39 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     # 趋势变平或变高，执行待买
                     # 首先检查ATR分位条件
                     can_execute_delayed_buy = True
-                    if ENABLE_DROP_BUY_ATR_PERCENTILE_CHECK:
+                    
+                    # 检查天均下降百分比（防止快速下跌时买入）
+                    if ENABLE_DROP_BUY_DAILY_DECLINE_CHECK and drop_buy_delayed_type == 'DROP':
+                        drop_idx = drop_buy_delayed_level
+                        if drop_idx <= DROP_BUY_DAILY_DECLINE_WAIT_LEVEL:
+                            # 检查是否有之前的卖出记录
+                            if last_sell_day > 0:
+                                days_since_sell = day_num - last_sell_day
+                                if days_since_sell > 0:
+                                    # 计算价格分位的天均下降百分比
+                                    current_price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                                    daily_decline_pct = (last_sell_price_pct - current_price_pct) / days_since_sell
+                                    if daily_decline_pct > DROP_BUY_DAILY_DECLINE_THRESHOLD:
+                                        # 天均下降超过阈值，需要等待价格回升
+                                        if drop_buy_daily_decline_wait_level == drop_idx and drop_buy_daily_decline_wait_price > 0:
+                                            # 检查价格是否超过跌幅买入时的价格
+                                            if close_price <= drop_buy_daily_decline_wait_price:
+                                                can_execute_delayed_buy = False
+                                                action = f"主账户待跌幅买{drop_idx + 1}@{close_price:.2f}(价格分位下降{daily_decline_pct*100:.1f}%/天>{DROP_BUY_DAILY_DECLINE_THRESHOLD*100:.0f}%等待)"
+                                            else:
+                                                # 价格突破，重置等待状态
+                                                drop_buy_daily_decline_wait_pending = False
+                                                drop_buy_daily_decline_wait_level = -1
+                                                drop_buy_daily_decline_wait_price = 0.0
+                                        else:
+                                            # 首次触发，记录等待状态
+                                            drop_buy_daily_decline_wait_pending = True
+                                            drop_buy_daily_decline_wait_level = drop_idx
+                                            drop_buy_daily_decline_wait_price = close_price
+                                            can_execute_delayed_buy = False
+                                            action = f"主账户待跌幅买{drop_idx + 1}@{close_price:.2f}(价格分位下降{daily_decline_pct*100:.1f}%/天>{DROP_BUY_DAILY_DECLINE_THRESHOLD*100:.0f}%等待)"
+                    
+                    if ENABLE_DROP_BUY_ATR_PERCENTILE_CHECK and can_execute_delayed_buy:
                         atr_pct = row['atr_pct'] if pd.notna(row['atr_pct']) else 0.0
                         atr_pct_sufficient = atr_pct >= DROP_BUY_ATR_PERCENTILE_MIN
                         
@@ -2042,6 +2132,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             holding_start_date = None
                             # 区间交易全部卖出后，设置锚定价格以便后续继续区间交易买入
                             main_account_drop_anchor_price = close_price
+                            # 记录卖出时的价格分位和日期（用于天均下降百分比检查）
+                            last_sell_price_pct = row['price_pct'] if pd.notna(row['price_pct']) else 0.0
+                            last_sell_day = day_num
                             # 只有当仓位全部卖出时，才重置爆发买入状态
                             # 检查是否是条件E卖出（包含E，可能有其他条件混合）
                             if stop_loss_triggered and 'E' in outbreak_sell_reason:

@@ -340,7 +340,7 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
             continue
         
         # 每只股票回测后暂停0.5秒，降低CPU负载
-        # time.sleep(0.5)
+        time.sleep(0.3)
 
         result = {
             'stock_code': stock_code,
