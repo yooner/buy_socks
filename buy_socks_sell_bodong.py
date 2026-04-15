@@ -57,7 +57,7 @@ SELL_A_HOLDING_HIGH_DROP_RATIO = 0.50  # 收盘价低于持仓期间最高价的
 
 # 普通买入A与卖出A的连续N天未创新高卖出配置（独立参数）
 ENABLE_NORMAL_NO_NEW_HIGH_SELL = True  # 是否启用普通买入A与卖出A的连续N天未创新高卖出机制
-NORMAL_NO_NEW_HIGH_DAYS = 5  # 连续多少天未创新高就卖出（默认6天）
+NORMAL_NO_NEW_HIGH_DAYS = 4  # 连续多少天未创新高就卖出（默认6天）
 NORMAL_NO_NEW_HIGH_RATIO = 0.99  # 未创新高阈值，收盘价低于持仓最高价的该比例时视为未创新高（默认0.99即低于最高价1%）
 
 # 普通卖出后的买回配置（防止卖了然后涨了）
@@ -950,6 +950,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             # 当价格高于卖出价格的设定比例时买回
             # 注意：如果处于爆发买入状态，不触发普通买回A（避免冲突）
             # 注意：处于买入A分仓买入模式时，禁止普通买回A
+            
+            # 在空仓且处于买回模式时，检测卖出A的比例卖出信号，结束买回模式
+            if position == 0 and normal_sell_buyback_active and sell_a_signal_triggered:
+                # 触发卖出A的比例卖出，结束买回模式
+                normal_sell_buyback_active = False
+                normal_sell_buyback_price = 0
+                action = f"买回截止@{close_price:.2f}(触发卖出A比例卖出)"
+            
             if position == 0 and normal_sell_buyback_active and normal_sell_buyback_price > 0 and not main_account_outbreak_buy_active and not buy_a_position_buy_active:
                 buyback_threshold_price = normal_sell_buyback_price * (1 + NORMAL_SELL_BUYBACK_THRESHOLD)
                 if close_price >= buyback_threshold_price:
