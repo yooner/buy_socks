@@ -18,6 +18,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+# 从ana_stocks导入tushare配置
+try:
+    from ana_stocks import TS_TOKEN, pro as tushare_pro
+except ImportError:
+    TS_TOKEN = None
+    tushare_pro = None
+
 STRATEGIES = {
     'thresholds': {
         'module': 'buy_socks_sell_thresholds',
@@ -62,6 +69,155 @@ def get_cached_stocks() -> List[str]:
     return sorted(stocks)
 
 
+def get_sh_index_price() -> Optional[float]:
+    """获取上证指数最新价格（优先从缓存文件，否则从tushare获取并缓存）"""
+    sh_index_file = os.path.join(CACHE_DIR, "sh000001_daily.json")
+    
+    # 首先尝试从缓存文件读取
+    if os.path.exists(sh_index_file):
+        try:
+            with open(sh_index_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            if data and len(data) > 0:
+                # 获取最新一天的数据
+                latest_data = data[-1]
+                close_price = latest_data.get('close', latest_data.get('收盘', None))
+                if close_price is not None:
+                    return float(close_price)
+        except Exception as e:
+            print(f"⚠️  读取上证指数缓存失败: {e}")
+    
+    # 缓存不存在或读取失败，从tushare获取
+    print("📡 从tushare获取上证指数数据...")
+    try:
+        # 使用从ana_stocks导入的token和pro
+        if TS_TOKEN and tushare_pro:
+            pro = tushare_pro
+            print(f"✅ 使用ana_stocks中的tushare配置")
+        else:
+            # 备选：尝试从环境变量获取
+            import tushare as ts
+            token = os.getenv('TUSHARE_TOKEN')
+            if not token:
+                print("⚠️  未找到tushare token，请确保ana_stocks.py中有TS_TOKEN配置")
+                return None
+            ts.set_token(token)
+            pro = ts.pro_api()
+        
+        # 获取上证指数日线数据（使用index_daily接口，最近100天）
+        df = pro.index_daily(ts_code='000001.SH', limit=100)
+        
+        if df is None or len(df) == 0:
+            print("⚠️  从tushare获取上证指数数据失败")
+            return None
+        
+        # 转换数据格式并缓存
+        df = df.sort_values('trade_date')  # 按日期升序排列
+        data_list = []
+        for _, row in df.iterrows():
+            data_list.append({
+                'date': row['trade_date'],
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['vol']),
+                'amount': float(row['amount'])
+            })
+        
+        # 保存到缓存文件
+        with open(sh_index_file, 'w', encoding='utf-8') as f:
+            json.dump(data_list, f, ensure_ascii=False, indent=2)
+        
+        print(f"✅ 上证指数数据已缓存到: {sh_index_file}")
+        
+        # 返回最新收盘价
+        return float(df.iloc[-1]['close'])
+        
+    except ImportError:
+        print("⚠️  未安装tushare，请运行: pip install tushare")
+        return None
+    except Exception as e:
+        print(f"⚠️  从tushare获取上证指数失败: {e}")
+        return None
+
+
+def get_position_buy_count_by_sh_index(sh_index_price: Optional[float]) -> int:
+    """根据上证指数点位决定分仓数量
+    
+    规则：
+    - 3000以下：分4仓
+    - 3000~3300：分3仓
+    - 3300~3600：分2仓
+    - 3600+：不分仓（全仓买入）
+    
+    Returns:
+        分仓数量，0表示不分仓（全仓买入）
+    """
+    if sh_index_price is None:
+        print("⚠️  无法获取上证指数，使用默认分仓数量4")
+        return 4
+    
+    if sh_index_price < 3000:
+        count = 4
+    elif sh_index_price < 3300:
+        count = 3
+    elif sh_index_price < 3600:
+        count = 2
+    else:
+        count = 0  # 3600+ 不分仓
+    
+    print(f"📊 上证指数: {sh_index_price:.2f}，分仓数量: {count if count > 0 else '不分仓(全仓)'}")
+    return count
+
+
+def get_position_buy_count_by_year(year: int) -> int:
+    """根据年份获取分仓数量（基于历史上证指数区间）
+    
+    历史区间划分：
+    - 2016: 3000以下 -> 4仓
+    - 2017: 3000~3300 -> 3仓
+    - 2018~2019: 3000以下 -> 4仓
+    - 2020: 3000~3300 -> 3仓
+    - 2021: 3300~3600 -> 2仓
+    - 2022: 3000~3300 -> 3仓
+    - 2023: 3000~3300 -> 3仓
+    - 2024: 3300~3600 -> 2仓
+    - 2025: 3300~3600 -> 2仓 (上半年), 3600+ -> 0仓 (下半年)
+    
+    Returns:
+        分仓数量，0表示不分仓（全仓买入）
+    """
+    # 年份到分仓数量的映射
+    year_config = {
+        2016: 3,  # 3000以下
+        2017: 2,  # 3000~3300
+        2018: 3,  # 3000以下
+        2019: 3,  # 3000以下
+        2020: 2,  # 3000~3300
+        2021: 0,  # 3300~3600
+        2022: 2,  # 3000~3300
+        2023: 2,  # 3000~3300
+        2024: 0,  # 3300~3600
+        2025: 0,  # 3600+
+        2026: 0,
+    }
+    
+    count = year_config.get(year, 4)  # 默认4仓
+    
+    # 打印年份和对应的上证指数区间
+    level_desc = {
+        4: "3000以下",
+        3: "3000~3300",
+        2: "3300~3600",
+        0: "3600+"
+    }
+    print(f"📅 年份: {year}，上证指数区间: {level_desc.get(count, '未知')}，分仓数量: {count if count > 0 else '不分仓(全仓)'}")
+    
+    return count
+
+
 def load_existing_results(excel_file: str) -> pd.DataFrame:
     """从 Excel 加载现有结果"""
     if not os.path.exists(excel_file):
@@ -75,8 +231,20 @@ def load_existing_results(excel_file: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def run_backtest_for_stock(strategy_key: str, stock_code: str) -> Tuple[Optional[float], Dict[int, float], Dict[str, Any]]:
-    """对单个股票运行指定策略的回测"""
+def run_backtest_for_stock(
+    strategy_key: str,
+    stock_code: str,
+    outbreak_sell_e_buyback_threshold: float = None,
+    outbreak_position_buy_count: int = None
+) -> Tuple[Optional[float], Dict[int, float], Dict[str, Any]]:
+    """对单个股票运行指定策略的回测
+    
+    Args:
+        strategy_key: 策略标识
+        stock_code: 股票代码
+        outbreak_sell_e_buyback_threshold: 卖出E后的买回阈值（仅bodong策略有效）
+        outbreak_position_buy_count: 爆发买入分仓数量（仅bodong策略有效）
+    """
     strategy = STRATEGIES[strategy_key]
     module_name = strategy['module']
 
@@ -92,7 +260,15 @@ def run_backtest_for_stock(strategy_key: str, stock_code: str) -> Tuple[Optional
         run_backtest_func = getattr(module, strategy['run_backtest'])
 
         sys.stdout = captured_output
-        result = run_backtest_func(stock_code)
+        # 对于bodong策略，传入额外参数
+        if strategy_key == 'bodong':
+            result = run_backtest_func(
+                stock_code,
+                outbreak_sell_e_buyback_threshold=outbreak_sell_e_buyback_threshold,
+                outbreak_position_buy_count=outbreak_position_buy_count
+            )
+        else:
+            result = run_backtest_func(stock_code)
         sys.stdout = old_stdout
 
         if result is None:
@@ -306,8 +482,22 @@ def check_and_create_git_tag(results: List[Dict], previous_df: pd.DataFrame, str
         return improvement_rate, False
 
 
-def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = True):
-    """运行单个策略"""
+def run_strategy(
+    strategy_key: str,
+    stocks: List[str],
+    enable_git_tag: bool = True,
+    outbreak_sell_e_buyback_threshold: float = None,
+    outbreak_position_buy_count: int = None
+):
+    """运行单个策略
+    
+    Args:
+        strategy_key: 策略标识
+        stocks: 股票代码列表
+        enable_git_tag: 是否启用git tag
+        outbreak_sell_e_buyback_threshold: 卖出E后的买回阈值（仅bodong策略有效）
+        outbreak_position_buy_count: 爆发买入分仓数量（仅bodong策略有效）
+    """
     strategy = STRATEGIES[strategy_key]
     excel_suffix = strategy['excel_suffix']
     excel_file = f"socks_results_{excel_suffix}.xlsx"
@@ -324,6 +514,12 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
     print(f"策略参数:")
     for k, v in params.items():
         print(f"  {k}: {v}")
+    # 打印bodong策略的额外参数
+    if strategy_key == 'bodong':
+        if outbreak_sell_e_buyback_threshold is not None:
+            print(f"  outbreak_sell_e_buyback_threshold: {outbreak_sell_e_buyback_threshold}")
+        if outbreak_position_buy_count is not None:
+            print(f"  outbreak_position_buy_count: {outbreak_position_buy_count}")
     print(f"{'='*60}")
 
     previous_df = load_existing_results(excel_file)
@@ -334,7 +530,12 @@ def run_strategy(strategy_key: str, stocks: List[str], enable_git_tag: bool = Tr
     holding_stocks = []  # 收集持仓股票信息
 
     for i, stock_code in enumerate(stocks, 1):
-        total_return, yearly_returns, extra_data = run_backtest_for_stock(strategy_key, stock_code)
+        total_return, yearly_returns, extra_data = run_backtest_for_stock(
+            strategy_key,
+            stock_code,
+            outbreak_sell_e_buyback_threshold=outbreak_sell_e_buyback_threshold,
+            outbreak_position_buy_count=outbreak_position_buy_count
+        )
 
         if total_return is None:
             continue
@@ -397,6 +598,11 @@ def main():
                         help='要回测的股票代码，用逗号分隔，如: 000002,603496')
     parser.add_argument('--all', action='store_true',
                         help='运行所有缓存股票（将启用 git tag 功能）')
+    # bodong策略专用参数
+    parser.add_argument('--outbreak-sell-e-buyback-threshold', type=float, default=None,
+                        help='卖出E后的买回阈值（仅bodong策略有效）')
+    parser.add_argument('--outbreak-position-buy-count', type=int, default=None,
+                        help='爆发买入分仓数量（仅bodong策略有效，默认根据上证指数自动计算：3000以下4仓，3000-3300分3仓，3300-3600分2仓，3600+不分仓）')
     args = parser.parse_args()
 
     all_mode = args.all
@@ -429,9 +635,30 @@ def main():
 
     print(f"\n将运行策略: {', '.join([STRATEGIES[s]['name'] for s in strategies_to_run])}")
 
+    # 获取上证指数点位，根据点位决定分仓数量（如果命令行没有指定）
+    sh_index_price = get_sh_index_price()
+    auto_position_buy_count = get_position_buy_count_by_sh_index(sh_index_price)
+    
+    # 如果命令行指定了分仓数量，使用命令行的；否则使用根据上证指数自动计算的
+    if args.outbreak_position_buy_count is not None:
+        final_position_buy_count = args.outbreak_position_buy_count
+        print(f"⚙️  使用命令行指定的分仓数量: {final_position_buy_count}")
+    else:
+        final_position_buy_count = auto_position_buy_count if auto_position_buy_count > 0 else None
+        if final_position_buy_count is None:
+            print(f"⚙️  上证指数{sh_index_price:.2f} >= 3600，不分仓（全仓买入）")
+        else:
+            print(f"⚙️  使用根据上证指数自动计算的分仓数量: {final_position_buy_count}")
+
     all_results = {}
     for strategy_key in strategies_to_run:
-        results = run_strategy(strategy_key, stocks, enable_git_tag=enable_git_tag)
+        results = run_strategy(
+            strategy_key,
+            stocks,
+            enable_git_tag=enable_git_tag,
+            outbreak_sell_e_buyback_threshold=args.outbreak_sell_e_buyback_threshold,
+            outbreak_position_buy_count=final_position_buy_count
+        )
         if results:
             all_results[strategy_key] = results
 

@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "002432"
+STOCK_CODE = "603496"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
@@ -26,12 +26,12 @@ START_DATE = END_DATE - timedelta(days=CACHE_DAYS)  # 起始日期（10年前）
 BACKTEST_START_DATE = None  # 回测开始日期
 BACKTEST_END_DATE = None    # 回测结束日期
 
-# BACKTEST_START_DATE = pd.to_datetime("20170302")  # 回测开始日期
-# BACKTEST_END_DATE = pd.to_datetime("20200302")   # 回测结束日期
+BACKTEST_START_DATE = pd.to_datetime("20160302")  # 回测开始日期
+BACKTEST_END_DATE = pd.to_datetime("20200302")   # 回测结束日期
 
-BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
+# BACKTEST_START_DATE = pd.to_datetime("20200302")  # 回测开始日期
 # BACKTEST_END_DATE = pd.to_datetime("20260414")   # 回测结束日期
-BACKTEST_END_DATE = pd.to_datetime("20260403")   # 回测结束日期
+# BACKTEST_END_DATE = pd.to_datetime("20260403")   # 回测结束日期
 
 # 
 
