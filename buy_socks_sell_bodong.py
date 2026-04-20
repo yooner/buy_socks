@@ -1,9 +1,13 @@
 ﻿"""
-突破新高买入策略
+突破新高买入策略 - 集成六状态市场分析
 - 起始资金10万，分N仓（默认4仓）
 - 突破新高（30/60/180/360日）买入一仓
 - 涨幅10%买入下一仓
 - 最后一仓下跌超过阈值卖出
+
+六状态分析:
+- 上升趋势 / 自然回升 / 次级回升
+- 下降趋势 / 自然回撤 / 次级回撤
 """
 
 import pandas as pd
@@ -15,18 +19,19 @@ from ana_stocks import (
     BACKTEST_YEARS_EXPORT as BACKTEST_YEARS,
     get_year_range
 )
+from market_state_analyzer import MarketStateAnalyzer, MarketState
 
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
-POSITION_COUNT = 4  # 分仓数量
-BREAKOUT_THRESHOLD = 0.01  # 突破新高阈值（2%）
-RISE_THRESHOLD = 0.01  # 涨幅阈值，买入下一仓（10%）
-
-# 每仓的止损比例（第1仓5%，第2仓7%，第3仓10%，第4仓13%）
-POSITION_STOP_LOSS = [0.03, 0.04, 0.05, 0.06]
+POSITION_COUNT = 3  # 分仓数量（默认3仓）
+ADD_POSITION_THRESHOLD = 0.05  # 加仓阈值，每上涨3%买入下一仓
 
 # 新高周期配置（可配置，默认60, 90, 180, 360）
 BREAKOUT_PERIODS = [180, 360]
+
+# 状态转换阈值配置（可配置）
+SIX_POINTS_PCT = 0.20 # 6个点对应的百分比（默认20%）
+THREE_POINTS_PCT = 0.10 # 3个点对应的百分比（默认10%）
 
 
 def get_output_file_path(base_name="out_put.txt"):
@@ -100,22 +105,27 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     
     # 初始化交易变量
     initial_capital = INITIAL_CAPITAL
-    cash = initial_capital
-    position_per_unit = initial_capital / POSITION_COUNT  # 每仓资金
-    
-    # 持仓状态
-    positions = []  # 已买入的仓位列表，每个元素是买入价格
-    total_shares = 0  # 总持股数
-    
-    # 新高锁定状态：买入第一仓后锁定，卖出后解锁
-    locked_highs = {}  # 锁定的各周期新高值
-    is_highs_locked = False  # 是否锁定新高
-    
-    # 持仓期间最高价（用于跟踪止损）
-    position_high_price = 0  # 持仓期间观察到的最高价
+    cash = initial_capital  # 可用现金
+    position = 0  # 持仓数量
+    position_cost = 0  # 持仓成本（平均成本）
+    position_count = 0  # 已买入仓位数量
+    last_buy_price = 0  # 上次买入价格（用于计算加仓）
+    invested_capital = 0  # 已投入资金
+    fixed_position_value = 0  # 固定的每仓金额（买入第一仓时确定）
     
     # 交易记录
     trades = []
+    
+    # 初始化市场状态分析器（传入可配置的阈值参数）
+    state_analyzer = MarketStateAnalyzer(
+        six_points_pct=SIX_POINTS_PCT,
+        three_points_pct=THREE_POINTS_PCT
+    )
+    df_with_states = state_analyzer.analyze(df, price_col='收盘', date_col='date')
+    
+    # 定义上升类型和下降类型趋势
+    UP_TRENDS = ['上升趋势', '自然回升', '次级回升']
+    DOWN_TRENDS = ['下降趋势', '自然回撤', '次级回撤']
     
     # 收集所有输出内容
     output_lines = []
@@ -127,161 +137,188 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         output_lines.append(line)
 
     # 打印表头
-    log_print(f"\n{'='*120}")
+    log_print(f"\n{'='*140}")
     log_print(f"股票代码: {stock_code}")
     log_print(f"回测区间: {start_year} - {end_year} ({BACKTEST_YEARS}年)")
     log_print(f"起始资金: {initial_capital:,.2f}")
-    log_print(f"分仓数量: {POSITION_COUNT}仓，每仓{position_per_unit:,.2f}元")
-    log_print(f"买入条件: 突破{BREAKOUT_PERIODS}日新高(>{BREAKOUT_THRESHOLD*100:.0f}%)买入，涨幅>{RISE_THRESHOLD*100:.0f}%买入下一仓")
-    log_print(f"卖出条件: 持仓最高价下跌超过对应仓位止损比例卖出")
-    log_print(f"{'='*120}\n")
+    log_print(f"{'='*140}\n")
 
     # 动态生成表头
-    period_headers = ' '.join([f"{str(p)+'日高':>10}" for p in BREAKOUT_PERIODS])
-    header = f"{'日':<5} {'日期':<12} {'收盘':>10} {period_headers} {'操作':<25} {'持仓':>8} {'市值':>12}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>10} {'市场状态':<12} {'段落':<6} {'关键点':>10} {'转换信息':<50}"
     log_print(header)
-    log_print("-" * (70 + len(BREAKOUT_PERIODS) * 11))
+    log_print("-" * 105)
     
     # 遍历每一天
-    for i in range(len(df)):
-        row = df.iloc[i]
+    prev_state = None
+    for i in range(len(df_with_states)):
+        row = df_with_states.iloc[i]
         day_num = i + 1
         date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10]
         close_price = row['收盘']
+        market_state = row['market_state']
+        is_start = row['is_segment_start']
+        is_end = row['is_segment_end']
+        key_point = row['key_point']
+        notes = row['state_notes']
         
-        action = ""  # 当日操作描述
+        # 段落标记（同一天可能既是结束也是开始）
+        segment_marker = ""
+        if is_start and is_end:
+            segment_marker = "[转换]"
+        elif is_start:
+            segment_marker = "[开始]"
+        elif is_end:
+            segment_marker = "[结束]"
         
-        # 获取当日N日高价（用于判断突破）
-        breakout_types = []
-        for period in BREAKOUT_PERIODS:
-            if is_highs_locked:
-                # 使用锁定的新高值判断
-                prev_high = locked_highs.get(period)
-                if prev_high and close_price >= prev_high * (1 + BREAKOUT_THRESHOLD):
-                    breakout_types.append(f"{period}日")
-            else:
-                # 使用当日的N日高判断（收盘价是否创了当日N日新高）
-                current_high = row[f'{period}日高']
-                if pd.notna(current_high) and close_price >= current_high * (1 - 0.0001):  # 允许微小误差
-                    # 检查前一日是否也是新高（避免重复买入）
-                    if i > 0:
-                        prev_close = df.iloc[i-1]['收盘']
-                        prev_high = df.iloc[i-1][f'{period}日高']
-                        if pd.notna(prev_high) and prev_close < prev_high * (1 - 0.0001):
-                            breakout_types.append(f"{period}日")
-                    else:
-                        breakout_types.append(f"{period}日")
+        key_point_str = f"{key_point:.2f}" if pd.notna(key_point) else ""
         
-        # ========== 更新持仓期间最高价 ==========
-        if len(positions) > 0:
-            position_high_price = max(position_high_price, close_price)
+        # 只在段落开始时显示转换信息（状态转换的当天）
+        notes_str = notes if notes and is_start else ""
         
-        # ========== 检查是否需要卖出 ==========
-        if len(positions) > 0:
-            drop_pct = (position_high_price - close_price) / position_high_price
-            # 根据当前持仓数量确定止损比例（第1仓用5%，第2仓用7%，第3仓用10%，第4仓用13%）
-            current_stop_loss = POSITION_STOP_LOSS[len(positions) - 1]
-            
-            if drop_pct >= current_stop_loss:
-                # 卖出所有持仓
-                sell_value = total_shares * close_price
-                profit = sell_value - sum(p * (initial_capital / POSITION_COUNT / p) for p in positions)
-                cash += sell_value
-                
-                action = f"卖出全部@{close_price:.2f}(从最高{position_high_price:.2f}跌{drop_pct*100:.1f}%,超{current_stop_loss*100:.0f}%)"
-                trades.append({
-                    'day': day_num,
-                    'date': date_str,
-                    'action': '卖出',
-                    'price': close_price,
-                    'shares': total_shares,
-                    'profit': profit
-                })
-                
-                positions = []
-                total_shares = 0
-                position_high_price = 0  # 重置持仓最高价
-                
-                # 解锁新高检测
-                is_highs_locked = False
-                locked_highs = {}
-                
-                # 卖出后清空breakout_types，避免当天再买入
-                breakout_types = []
+        # ===== 买卖逻辑 =====
+        trade_action = ""
         
-        # ========== 检查是否需要买入 ==========
-        if len(positions) < POSITION_COUNT and cash >= position_per_unit:
-            should_buy = False
-            buy_reason = ""
-            
-            if len(positions) == 0:
-                # 第一仓：检查是否突破任何一种新高
-                if breakout_types:
-                    should_buy = True
-                    buy_reason = f"突破{'/'.join(breakout_types)}新高"
-            else:
-                # 后续仓位：检查是否比上一仓上涨超过阈值
-                last_buy_price = positions[-1]
-                rise_pct = (close_price - last_buy_price) / last_buy_price
-                
-                if rise_pct >= RISE_THRESHOLD:
-                    should_buy = True
-                    buy_reason = f"比上仓涨{rise_pct*100:.1f}%"
-            
-            if should_buy:
-                # 计算可买入股数
-                buy_amount = position_per_unit
-                shares_to_buy = int(buy_amount / close_price / 100) * 100  # 取整到100股
-                
-                if shares_to_buy >= 100 and cash >= shares_to_buy * close_price:
-                    cost = shares_to_buy * close_price
-                    cash -= cost
-                    positions.append(close_price)
-                    total_shares += shares_to_buy
-                    
-                    action = f"买入第{len(positions)}仓@{close_price:.2f}({buy_reason})"
+        # 计算当前总资金（现金 + 持仓市值）
+        current_total_value = cash + position * close_price
+        
+        # 检查是否发生状态转换
+        bought_on_transition = False
+        if is_start and prev_state is not None:
+            # 买入逻辑：只要转换到上升类型就买入（包括上升类型之间互转）
+            if market_state in UP_TRENDS and prev_state != market_state:
+                if position_count < POSITION_COUNT:
+                    # 第一仓时固定每仓金额，后续沿用固定每仓金额
+                    if position_count == 0:
+                        fixed_position_value = current_total_value / POSITION_COUNT
+                    position_value = fixed_position_value
+                    if cash >= position_value * 0.99:
+                        shares = position_value / close_price
+                        prev_position = position
+                        position += shares
+                        if prev_position <= 0:
+                            position_cost = close_price
+                        else:
+                            total_cost = position_cost * prev_position + close_price * shares
+                            position_cost = total_cost / position
+                        invested_capital += shares * close_price
+                        cash -= shares * close_price
+                        position_count += 1
+                        last_buy_price = close_price
+                        trade_action = f"[买入{position_count}/{POSITION_COUNT}]"
+                        trades.append({
+                            'date': date_str,
+                            'action': '买入',
+                            'position_num': position_count,
+                            'price': close_price,
+                            'shares': shares,
+                            'value': shares * close_price
+                        })
+                        bought_on_transition = True
+
+            # 卖出逻辑：从上升类型趋势变为下降类型趋势
+            if prev_state in UP_TRENDS and market_state in DOWN_TRENDS:
+                if position > 0:
+                    sell_value = position * close_price
+                    profit = sell_value - invested_capital
+                    cash += sell_value
+                    trade_action = "[卖出全部]"
                     trades.append({
-                        'day': day_num,
+                        'date': date_str,
+                        'action': '卖出',
+                        'price': close_price,
+                        'shares': position,
+                        'value': sell_value,
+                        'profit': profit
+                    })
+                    position = 0
+                    position_cost = 0
+                    position_count = 0
+                    last_buy_price = 0
+                    invested_capital = 0
+                    fixed_position_value = 0
+
+        # 加仓逻辑：当前已有持仓（在上升类型趋势中），且价格上涨超过阈值，且还有可用现金
+        # 如果当天已经发生“状态转换买入”，则跳过加仓，避免同一天重复买入
+        if (not bought_on_transition) and position_count > 0 and position_count < POSITION_COUNT and market_state in UP_TRENDS:
+            if close_price >= last_buy_price * (1 + ADD_POSITION_THRESHOLD):
+                # 使用固定的每仓金额
+                position_value = fixed_position_value
+                # 检查是否有足够现金（允许1%的浮点误差）
+                if cash >= position_value * 0.99:
+                    shares = position_value / close_price
+                    position += shares
+                    # 更新平均成本
+                    total_cost = position_cost * (position - shares) + close_price * shares
+                    position_cost = total_cost / position
+                    invested_capital += shares * close_price
+                    cash -= shares * close_price
+                    position_count += 1
+                    last_buy_price = close_price
+                    trade_action = f"[买入{position_count}/{POSITION_COUNT}]"
+                    trades.append({
                         'date': date_str,
                         'action': '买入',
+                        'position_num': position_count,
                         'price': close_price,
-                        'shares': shares_to_buy,
-                        'unit': len(positions)
+                        'shares': shares,
+                        'value': shares * close_price
                     })
-                    
-                    # 如果是第一仓，锁定当前所有周期的新高值，并初始化持仓最高价
-                    if len(positions) == 1:
-                        is_highs_locked = True
-                        position_high_price = close_price  # 初始化持仓最高价为买入价
-                        for period in BREAKOUT_PERIODS:
-                            locked_highs[period] = row[f'{period}日高']
         
-        # 计算当前市值
-        market_value = cash + total_shares * close_price
-        position_str = f"{len(positions)}/{POSITION_COUNT}" if len(positions) > 0 else "0/0"
+        # 更新前一天的状态
+        if is_start:
+            prev_state = market_state
         
-        # 动态生成显示值
-        def fmt_val(val):
-            if pd.notna(val):
-                return f"{val:>10.2f}"
-            else:
-                return f"{'N/A':>10}"
-        period_values = ' '.join([fmt_val(row[f'{p}日高']) for p in BREAKOUT_PERIODS])
-        
-        log_print(f"{day_num:<5} {date_str:<12} {close_price:>10.2f} {period_values} {action:<25} {position_str:>8} {market_value:>12,.2f}")
+        # 构建输出行
+        output_str = f"{day_num:<5} {date_str:<12} {close_price:>10.2f} {market_state:<12} {segment_marker:<6} {key_point_str:>10} {notes_str:<50}"
+        if trade_action:
+            output_str += f" {trade_action}"
+        log_print(output_str)
     
-    log_print(f"{'='*120}")
+    log_print(f"{'='*140}")
     
-    # 计算最终收益
-    final_value = cash + total_shares * df.iloc[-1]['收盘']
+    # 打印状态段落摘要
+    log_print("\n【市场状态段落摘要】")
+    segments_df = state_analyzer.get_segments_summary()
+    for i, seg in segments_df.iterrows():
+        duration = seg['持续天数']
+        end_date = seg['结束日期'] if seg['结束日期'] else '现在'
+        key_point_type = "最高点" if seg['状态'] in ['上升趋势', '自然回升', '次级回升'] else "最低点"
+        end_price_str = f"{seg['结束价格']:.2f}" if pd.notna(seg['结束价格']) else '...'
+        
+        # 计算段落内的价格变化
+        if pd.notna(seg['结束价格']):
+            seg_change = seg['结束价格'] - seg['开始价格']
+            seg_change_pct = (seg_change / seg['开始价格']) * 100
+            change_str = f"{seg_change:+.2f}({seg_change_pct:+.2f}%)"
+        else:
+            change_str = "进行中"
+        
+        log_print(f"  [{i}] {seg['状态']}: {seg['开始日期']}~{end_date} | "
+                  f"价格:{seg['开始价格']:.2f}→{end_price_str} {change_str} | "
+                  f"{key_point_type}:{seg['关键点']:.2f} | {duration}天")
+    
+    # 计算最终收益（包括持仓市值）
+    final_price = df_with_states.iloc[-1]['收盘']
+    position_value = position * final_price
+    final_value = cash + position_value
     final_profit = final_value - initial_capital
     total_return = (final_profit / initial_capital) * 100
     
-    log_print(f"\n{'='*120}")
-    log_print(f"最终资金: {final_value:,.2f}")
+    log_print(f"\n{'='*140}")
+    log_print(f"最终资金: {final_value:,.2f} (现金: {cash:,.2f} + 持仓市值: {position_value:,.2f})")
     log_print(f"总盈亏: {final_profit:,.2f} ({total_return:+.2f}%)")
     log_print(f"交易次数: {len(trades)}")
-    log_print(f"{'='*120}")
+    
+    # 打印交易记录
+    if trades:
+        log_print(f"\n【交易记录】")
+        for trade in trades:
+            if trade['action'] == '买入':
+                log_print(f"  买入: {trade['date']} | 仓位: {trade['position_num']}/{POSITION_COUNT} | 价格: {trade['price']:.2f} | 数量: {trade['shares']:.0f} | 金额: {trade['value']:,.2f}")
+            else:
+                log_print(f"  卖出: {trade['date']} | 价格: {trade['price']:.2f} | 数量: {trade['shares']:.0f} | 金额: {trade['value']:,.2f} | 盈亏: {trade['profit']:+.2f}")
+    
+    log_print(f"{'='*140}")
     
     # 保存到文件
     output_file = get_output_file_path()
@@ -292,7 +329,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     except Exception as e:
         print(f"\n[警告: 无法保存文件 - {e}]")
     
-    return total_return, {}, {'trades': trades, 'final_value': final_value, 'holding_info': None}
+    return total_return, {}, {'trades': trades, 'final_value': final_value, 'holding_info': None, 'state_segments': segments_df.to_dict('records')}
 
 
 if __name__ == "__main__":
