@@ -24,14 +24,14 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
 POSITION_COUNT = 3  # 分仓数量（默认3仓）
-ADD_POSITION_THRESHOLD = 0.05  # 加仓阈值，每上涨3%买入下一仓
+ADD_POSITION_THRESHOLD = 0.01  # 加仓阈值，每上涨3%买入下一仓
 
 # 新高周期配置（可配置，默认60, 90, 180, 360）
 BREAKOUT_PERIODS = [180, 360]
 
 # 状态转换阈值配置（可配置）
-SIX_POINTS_PCT = 0.20 # 6个点对应的百分比（默认20%）
-THREE_POINTS_PCT = 0.10 # 3个点对应的百分比（默认10%）
+SIX_POINTS_PCT = 0.10 # 6个点对应的百分比（默认20%）
+THREE_POINTS_PCT = 0.05 # 3个点对应的百分比（默认10%）
 
 
 def get_output_file_path(base_name="out_put.txt"):
