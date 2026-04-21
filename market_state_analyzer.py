@@ -54,7 +54,8 @@ class DailyState:
     state: MarketState
     is_segment_start: bool = False
     is_segment_end: bool = False
-    key_point: Optional[float] = None
+    key_point: Optional[float] = None  # 当前状态的关键点（最高点或最低点）
+    ref_key_point: Optional[float] = None  # 参考关键点（自然回撤参考下降趋势最低点，自然回升参考上升趋势最高点）
     notes: str = ""
 
 
@@ -122,6 +123,7 @@ class MarketStateAnalyzer:
         df['is_segment_start'] = [ds.is_segment_start for ds in self.daily_states]
         df['is_segment_end'] = [ds.is_segment_end for ds in self.daily_states]
         df['key_point'] = [ds.key_point for ds in self.daily_states]
+        df['ref_key_point'] = [ds.ref_key_point for ds in self.daily_states]
         df['state_notes'] = [ds.notes for ds in self.daily_states]
         
         return df
@@ -221,6 +223,9 @@ class MarketStateAnalyzer:
             # 更新关键点
             self._update_key_point(price)
         
+        # 获取参考关键点
+        ref_key_point = self._get_ref_key_point()
+        
         daily = DailyState(
             idx=idx,
             date=date_str,
@@ -229,6 +234,7 @@ class MarketStateAnalyzer:
             is_segment_start=is_start,
             is_segment_end=is_end,
             key_point=self.current_segment.key_point if self.current_segment else None,
+            ref_key_point=ref_key_point,
             notes=notes
         )
         self.daily_states.append(daily)
@@ -238,9 +244,11 @@ class MarketStateAnalyzer:
         
         if self.current_state == MarketState.UP_TREND:
             # 上升趋势 → 自然回撤: 最高点下降6个点(20%)
+            # 注意：上升趋势只能到自然回撤，不能到次级回撤
             if self.up_trend_high:
                 drop_pct = (self.up_trend_high - price) / self.up_trend_high
                 if drop_pct >= self.SIX_POINTS:
+                    # 直接转为自然回撤
                     self.current_natural_reaction_low = price
                     if self.natural_reaction_low is None or price < self.natural_reaction_low:
                         self.natural_reaction_low = price
@@ -285,15 +293,16 @@ class MarketStateAnalyzer:
                 rise_pct = (price - self.current_natural_reaction_low) / self.current_natural_reaction_low
                 if rise_pct >= self.SIX_POINTS:
                     # 判断是次级回升还是自然回升
-                    # 如果没有自然回升的历史记录，或者价格突破了自然回升高点 → 自然回升
-                    # 如果有自然回升记录但价格没突破 → 次级回升
-                    if self.natural_rally_high is None or price > self.natural_rally_high:
-                        # 自然回升
+                    # 使用当前自然回升段落的高点来判断，而不是历史最高点
+                    current_rally_high = self.current_natural_rally_high if self.current_natural_rally_high else self.natural_rally_high
+                    if current_rally_high is None or price > current_rally_high:
+                        # 突破当前自然回升高点，是自然回升
                         self.current_natural_rally_high = price
-                        self.natural_rally_high = price
+                        if self.natural_rally_high is None or price > self.natural_rally_high:
+                            self.natural_rally_high = price
                         return MarketState.NATURAL_RALLY
                     else:
-                        # 次级回升（没有突破之前自然回升的高点）
+                        # 没有突破当前自然回升高点，是次级回升
                         self.secondary_rally_high = price
                         return MarketState.SECONDARY_RALLY
             
@@ -301,9 +310,11 @@ class MarketStateAnalyzer:
         
         elif self.current_state == MarketState.DOWN_TREND:
             # 下降趋势 → 自然回升: 最低点上升6个点(20%)
+            # 注意：下降趋势只能到自然回升，不能到次级回升
             if self.down_trend_low:
                 rise_pct = (price - self.down_trend_low) / self.down_trend_low
                 if rise_pct >= self.SIX_POINTS:
+                    # 直接转为自然回升
                     self.current_natural_rally_high = price
                     if self.natural_rally_high is None or price > self.natural_rally_high:
                         self.natural_rally_high = price
@@ -349,15 +360,16 @@ class MarketStateAnalyzer:
                 drop_pct = (self.current_natural_rally_high - price) / self.current_natural_rally_high
                 if drop_pct >= self.SIX_POINTS:
                     # 判断是次级回撤还是自然回撤
-                    # 如果没有自然回撤的历史记录，或者价格跌破了自然回撤低点 → 自然回撤
-                    # 如果有自然回撤记录但价格没跌破 → 次级回撤
-                    if self.natural_reaction_low is None or price < self.natural_reaction_low:
-                        # 自然回撤
+                    # 使用当前自然回撤段落的低点来判断，而不是历史最低点
+                    current_reaction_low = self.current_natural_reaction_low if self.current_natural_reaction_low else self.natural_reaction_low
+                    if current_reaction_low is None or price < current_reaction_low:
+                        # 跌破当前自然回撤低点，是自然回撤
                         self.current_natural_reaction_low = price
-                        self.natural_reaction_low = price
+                        if self.natural_reaction_low is None or price < self.natural_reaction_low:
+                            self.natural_reaction_low = price
                         return MarketState.NATURAL_REACTION
                     else:
-                        # 次级回撤（没有跌破之前自然回撤的低点）
+                        # 没有跌破当前自然回撤低点，是次级回撤
                         self.secondary_reaction_low = price
                         return MarketState.SECONDARY_REACTION
             
@@ -369,23 +381,26 @@ class MarketStateAnalyzer:
                 self.secondary_rally_high = price
                 self.current_segment.key_point = price
             
-            # 次级回升 → 自然回升: 突破自然回升高点（历史最高点）
-            # 使用历史记录的自然回升高点来判断
-            if self.natural_rally_high and price >= self.natural_rally_high:
+            # 次级回升 → 自然回升: 突破当前自然回升段落的高点
+            # 使用当前自然回升段落的高点来判断，而不是历史最高点
+            current_rally_high = self.current_natural_rally_high if self.current_natural_rally_high else self.natural_rally_high
+            if current_rally_high and price >= current_rally_high:
                 self.current_natural_rally_high = price
-                self.natural_rally_high = price
+                if self.natural_rally_high is None or price > self.natural_rally_high:
+                    self.natural_rally_high = price
                 return MarketState.NATURAL_RALLY
             
-            # 次级回升 → 次级回撤: 从最高点下降6个点(20%)，但没有跌破自然回撤低点
+            # 次级回升 → 次级回撤: 从最高点下降6个点(20%)，但没有跌破当前自然回撤低点
             if self.secondary_rally_high:
                 drop_pct = (self.secondary_rally_high - price) / self.secondary_rally_high
                 if drop_pct >= self.SIX_POINTS:
-                    if self.current_natural_reaction_low and price >= self.current_natural_reaction_low:
-                        # 没有跌破自然回撤低点，是次级回撤
+                    current_reaction_low = self.current_natural_reaction_low if self.current_natural_reaction_low else self.natural_reaction_low
+                    if current_reaction_low and price >= current_reaction_low:
+                        # 没有跌破当前自然回撤低点，是次级回撤
                         self.secondary_reaction_low = price
                         return MarketState.SECONDARY_REACTION
-                    elif self.current_natural_reaction_low is None or price < self.current_natural_reaction_low:
-                        # 跌破自然回撤低点，转为自然回撤
+                    elif current_reaction_low is None or price < current_reaction_low:
+                        # 跌破当前自然回撤低点，转为自然回撤
                         self.current_natural_reaction_low = price
                         if self.natural_reaction_low is None or price < self.natural_reaction_low:
                             self.natural_reaction_low = price
@@ -394,8 +409,10 @@ class MarketStateAnalyzer:
             return MarketState.SECONDARY_RALLY
         
         elif self.current_state == MarketState.SECONDARY_REACTION:
-            # 次级回撤 → 自然回撤: 跌破自然回撤最低点
-            if self.current_natural_reaction_low and price < self.current_natural_reaction_low:
+            # 次级回撤 → 自然回撤: 跌破当前自然回撤段落的低点
+            # 使用当前自然回撤段落的低点来判断，而不是历史最低点
+            current_reaction_low = self.current_natural_reaction_low if self.current_natural_reaction_low else self.natural_reaction_low
+            if current_reaction_low and price < current_reaction_low:
                 self.current_natural_reaction_low = price
                 if self.natural_reaction_low is None or price < self.natural_reaction_low:
                     self.natural_reaction_low = price
@@ -405,16 +422,16 @@ class MarketStateAnalyzer:
             if self.secondary_reaction_low:
                 rise_pct = (price - self.secondary_reaction_low) / self.secondary_reaction_low
                 if rise_pct >= self.SIX_POINTS:
-                    # 使用历史上自然回升的最高点来判断是否突破
-                    historical_rally_high = self.natural_rally_high
-                    if historical_rally_high and price > historical_rally_high:
-                        # 突破自然回升历史最高点，转为自然回升
+                    # 使用当前自然回升段落的高点来判断是否突破，而不是历史最高点
+                    current_rally_high = self.current_natural_rally_high if self.current_natural_rally_high else self.natural_rally_high
+                    if current_rally_high and price > current_rally_high:
+                        # 突破当前自然回升高点，转为自然回升
                         self.current_natural_rally_high = price
                         if self.natural_rally_high is None or price > self.natural_rally_high:
                             self.natural_rally_high = price
                         return MarketState.NATURAL_RALLY
                     else:
-                        # 没有突破自然回升历史最高点（或没有历史记录），是次级回升
+                        # 没有突破当前自然回升高点（或没有当前记录），是次级回升
                         self.secondary_rally_high = price
                         return MarketState.SECONDARY_RALLY
 
@@ -513,6 +530,33 @@ class MarketStateAnalyzer:
                 if self.secondary_reaction_low is None or price < self.secondary_reaction_low:
                     self.secondary_reaction_low = price
     
+    def _get_ref_key_point(self) -> Optional[float]:
+        """获取参考关键点
+        
+        - 自然回撤区间：显示下降趋势的最低点
+        - 自然回升区间：显示上升趋势的最高点
+        - 次级回升区间：显示自然回升的最高点
+        - 次级回撤区间：显示自然回撤的最低点
+        - 上升趋势区间：显示上升趋势的最高点
+        - 其他状态：返回None
+        """
+        if self.current_state == MarketState.NATURAL_REACTION:
+            # 自然回撤参考下降趋势最低点
+            return self.down_trend_low
+        elif self.current_state == MarketState.NATURAL_RALLY:
+            # 自然回升参考上升趋势最高点
+            return self.up_trend_high
+        elif self.current_state == MarketState.SECONDARY_RALLY:
+            # 次级回升参考当前自然回升段落的高点，而不是历史最高点
+            return self.current_natural_rally_high if self.current_natural_rally_high else self.natural_rally_high
+        elif self.current_state == MarketState.SECONDARY_REACTION:
+            # 次级回撤参考当前自然回撤段落的低点，而不是历史最低点
+            return self.current_natural_reaction_low if self.current_natural_reaction_low else self.natural_reaction_low
+        elif self.current_state == MarketState.UP_TREND:
+            # 上升趋势区间显示上升趋势最高点，方便与持仓最高点对比
+            return self.up_trend_high
+        return None
+    
     def get_segments_summary(self) -> pd.DataFrame:
         """获取段落摘要"""
         data = []
@@ -566,3 +610,4 @@ def analyze_market_states(df: pd.DataFrame, price_col: str = '收盘', date_col:
     """
     analyzer = MarketStateAnalyzer()
     return analyzer.analyze(df, price_col, date_col)
+

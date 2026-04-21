@@ -23,7 +23,7 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
-POSITION_COUNT = 3  # 分仓数量（默认3仓）
+POSITION_COUNT = 1  # 分仓数量（默认3仓）
 ADD_POSITION_THRESHOLD = 0.01  # 加仓阈值，每上涨3%买入下一仓
 
 # 新高周期配置（可配置，默认60, 90, 180, 360）
@@ -144,9 +144,9 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     log_print(f"{'='*140}\n")
 
     # 动态生成表头
-    header = f"{'日':<5} {'日期':<12} {'收盘':>10} {'市场状态':<12} {'段落':<6} {'关键点':>10} {'转换信息':<50}"
+    header = f"{'日':<5} {'日期':<12} {'收盘':>10} {'市场状态':<12} {'段落':<6} {'关键点':>10} {'参考点':>10} {'转换信息':<50}"
     log_print(header)
-    log_print("-" * 105)
+    log_print("-" * 120)
     
     # 遍历每一天
     prev_state = None
@@ -159,6 +159,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         is_start = row['is_segment_start']
         is_end = row['is_segment_end']
         key_point = row['key_point']
+        ref_key_point = row.get('ref_key_point', None)
         notes = row['state_notes']
         
         # 段落标记（同一天可能既是结束也是开始）
@@ -171,6 +172,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             segment_marker = "[结束]"
         
         key_point_str = f"{key_point:.2f}" if pd.notna(key_point) else ""
+        ref_key_point_str = f"{ref_key_point:.2f}" if pd.notna(ref_key_point) else ""
         
         # 只在段落开始时显示转换信息（状态转换的当天）
         notes_str = notes if notes and is_start else ""
@@ -269,7 +271,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             prev_state = market_state
         
         # 构建输出行
-        output_str = f"{day_num:<5} {date_str:<12} {close_price:>10.2f} {market_state:<12} {segment_marker:<6} {key_point_str:>10} {notes_str:<50}"
+        output_str = f"{day_num:<5} {date_str:<12} {close_price:>10.2f} {market_state:<12} {segment_marker:<6} {key_point_str:>10} {ref_key_point_str:>10} {notes_str:<50}"
         if trade_action:
             output_str += f" {trade_action}"
         log_print(output_str)
