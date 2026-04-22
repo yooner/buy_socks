@@ -1,9 +1,8 @@
 ﻿"""
-突破新高买入策略 - 集成六状态市场分析
-- 起始资金10万，分N仓（默认4仓）
-- 突破新高（30/60/180/360日）买入一仓
-- 涨幅10%买入下一仓
-- 最后一仓下跌超过阈值卖出
+六状态市场分析策略
+- 起始资金10万，分N仓（默认3仓）
+- 状态转换时买入/卖出
+- 涨幅3%买入下一仓
 
 六状态分析:
 - 上升趋势 / 自然回升 / 次级回升
@@ -24,14 +23,11 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
 POSITION_COUNT = 1  # 分仓数量（默认3仓）
-ADD_POSITION_THRESHOLD = 0.01  # 加仓阈值，每上涨3%买入下一仓
-
-# 新高周期配置（可配置，默认60, 90, 180, 360）
-BREAKOUT_PERIODS = [180, 360]
+ADD_POSITION_THRESHOLD = 0.02  # 加仓阈值，每上涨3%买入下一仓
 
 # 状态转换阈值配置（可配置）
-SIX_POINTS_PCT = 0.10 # 6个点对应的百分比（默认20%）
-THREE_POINTS_PCT = 0.05 # 3个点对应的百分比（默认10%）
+SIX_POINTS_PCT = 0.09 # 6个点对应的百分比（默认20%）
+THREE_POINTS_PCT = 0.045 # 3个点对应的百分比（默认10%）
 
 
 def get_output_file_path(base_name="out_put.txt"):
@@ -83,17 +79,11 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # 按日期从远到近排序
     df = df.sort_values('date').reset_index(drop=True)
-    
+
     # 只取最近一年的数据
     days_to_show = 365 * BACKTEST_YEARS
     df = df.tail(days_to_show).reset_index(drop=True)
-    
-    # 计算N日高/低价（使用可配置的周期）
-    # 使用min_periods=period确保只有满N天才显示数据
-    for period in BREAKOUT_PERIODS:
-        df[f'{period}日高'] = df['收盘'].rolling(window=period, min_periods=period).max()
-        df[f'{period}日低'] = df['收盘'].rolling(window=period, min_periods=period).min()
-    
+
     return df
 
 
@@ -126,6 +116,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     # 定义上升类型和下降类型趋势
     UP_TRENDS = ['上升趋势', '自然回升', '次级回升']
     DOWN_TRENDS = ['下降趋势', '自然回撤', '次级回撤']
+    
+    # === 新增：卖出条件标记 ===
+    # 当自然回升→上升趋势但未突破前高时，标记下次上升趋势→自然回撤需要卖出
+    sell_on_next_up_trend_to_reaction = False
+    # 记录上一次上升趋势的最高点
+    last_up_trend_high = None
+    # 记录上一次下降趋势的最低点
+    last_down_trend_low = None
     
     # 收集所有输出内容
     output_lines = []
@@ -161,6 +159,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         key_point = row['key_point']
         ref_key_point = row.get('ref_key_point', None)
         notes = row['state_notes']
+        allow_buy_down_to_rally = row.get('allow_buy_down_to_rally', True)
         
         # 段落标记（同一天可能既是结束也是开始）
         segment_marker = ""
@@ -184,10 +183,21 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         current_total_value = cash + position * close_price
         
         # 检查是否发生状态转换
+        should_sell = False
         bought_on_transition = False
         if is_start and prev_state is not None:
-            # 买入逻辑：只要转换到上升类型就买入（包括上升类型之间互转）
-            if market_state in UP_TRENDS and prev_state != market_state:
+            # 买入逻辑：仅当下降类型 → 上升类型时买入
+            can_buy_on_transition = True
+            if prev_state == '下降趋势' and market_state == '自然回升' and not allow_buy_down_to_rally:
+                can_buy_on_transition = False
+                if trade_action == "":
+                    trade_action = "[跳过买入: 下行破前低]"
+            # 买入逻辑：下降类型→上升类型，或上升类型→上升类型，均可买入
+            can_buy_transition_pair = (
+                (prev_state in DOWN_TRENDS and market_state in UP_TRENDS) or
+                (prev_state in UP_TRENDS and market_state in UP_TRENDS)
+            )
+            if can_buy_on_transition and can_buy_transition_pair:
                 if position_count < POSITION_COUNT:
                     # 第一仓时固定每仓金额，后续沿用固定每仓金额
                     if position_count == 0:
@@ -217,55 +227,66 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         })
                         bought_on_transition = True
 
-            # 卖出逻辑：从上升类型趋势变为下降类型趋势
+            # 卖出逻辑：仅当上升类型 → 下降类型时卖出
+            # 特例：上升趋势 → 自然回撤，若“本轮上升趋势高点”突破“上一轮上升趋势高点”则不卖
             if prev_state in UP_TRENDS and market_state in DOWN_TRENDS:
-                if position > 0:
-                    sell_value = position * close_price
-                    profit = sell_value - invested_capital
-                    cash += sell_value
-                    trade_action = "[卖出全部]"
-                    trades.append({
-                        'date': date_str,
-                        'action': '卖出',
-                        'price': close_price,
-                        'shares': position,
-                        'value': sell_value,
-                        'profit': profit
-                    })
-                    position = 0
-                    position_cost = 0
-                    position_count = 0
-                    last_buy_price = 0
-                    invested_capital = 0
-                    fixed_position_value = 0
+                should_sell = True
 
-        # 加仓逻辑：当前已有持仓（在上升类型趋势中），且价格上涨超过阈值，且还有可用现金
-        # 如果当天已经发生“状态转换买入”，则跳过加仓，避免同一天重复买入
-        if (not bought_on_transition) and position_count > 0 and position_count < POSITION_COUNT and market_state in UP_TRENDS:
-            if close_price >= last_buy_price * (1 + ADD_POSITION_THRESHOLD):
-                # 使用固定的每仓金额
-                position_value = fixed_position_value
-                # 检查是否有足够现金（允许1%的浮点误差）
-                if cash >= position_value * 0.99:
-                    shares = position_value / close_price
-                    position += shares
-                    # 更新平均成本
-                    total_cost = position_cost * (position - shares) + close_price * shares
-                    position_cost = total_cost / position
-                    invested_capital += shares * close_price
-                    cash -= shares * close_price
-                    position_count += 1
-                    last_buy_price = close_price
-                    trade_action = f"[买入{position_count}/{POSITION_COUNT}]"
-                    trades.append({
-                        'date': date_str,
-                        'action': '买入',
-                        'position_num': position_count,
-                        'price': close_price,
-                        'shares': shares,
-                        'value': shares * close_price
-                    })
-        
+            # 下降类型 → 下降类型 的状态转换也卖出
+            if prev_state in DOWN_TRENDS and market_state in DOWN_TRENDS:
+                should_sell = True
+
+            # 特例: 上升趋势 → 自然回撤
+            if prev_state == '上升趋势' and market_state == '自然回撤':
+                current_up_trend_high = df_with_states.iloc[i - 1]['key_point'] if i > 0 else None
+                broke_prev_up_high = (
+                    last_up_trend_high is not None and
+                    pd.notna(current_up_trend_high) and
+                    current_up_trend_high > last_up_trend_high
+                )
+                if broke_prev_up_high:
+                    should_sell = False
+                    if trade_action == "":
+                        trade_action = "[跳过卖出: 上升突破前高]"
+
+                # 上升趋势结束，更新“上一次上升趋势高点”供下一轮比较
+                if pd.notna(current_up_trend_high):
+                    last_up_trend_high = current_up_trend_high
+            
+            # 自然回升→上升趋势：记录“上一轮上升趋势高点”作为后续卖出比较基准
+            if prev_state == '自然回升' and market_state == '上升趋势':
+                # 优先使用状态分析器给出的参考点（上一轮上升趋势高点）
+                if pd.notna(ref_key_point):
+                    last_up_trend_high = ref_key_point
+                else:
+                    # 兜底：若参考点缺失，保留原基准不变，避免错误抬高比较线
+                    pass
+                # 进入新上升趋势时清空旧标记，是否卖出由后续“上升趋势→自然回撤”实时比较决定
+                sell_on_next_up_trend_to_reaction = False
+            
+            if should_sell and position > 0:
+                sell_value = position * close_price
+                profit = sell_value - invested_capital
+                profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
+                cash += sell_value
+                trade_action = "[卖出全部]"
+                trades.append({
+                    'date': date_str,
+                    'action': '卖出',
+                    'price': close_price,
+                    'shares': position,
+                    'value': sell_value,
+                    'profit': profit,
+                    'profit_pct': profit_pct
+                })
+                position = 0
+                position_cost = 0
+                position_count = 0
+                last_buy_price = 0
+                invested_capital = 0
+                fixed_position_value = 0
+
+        # 已按需求移除加仓逻辑：只保留状态转换触发的买入
         # 更新前一天的状态
         if is_start:
             prev_state = market_state
@@ -318,7 +339,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             if trade['action'] == '买入':
                 log_print(f"  买入: {trade['date']} | 仓位: {trade['position_num']}/{POSITION_COUNT} | 价格: {trade['price']:.2f} | 数量: {trade['shares']:.0f} | 金额: {trade['value']:,.2f}")
             else:
-                log_print(f"  卖出: {trade['date']} | 价格: {trade['price']:.2f} | 数量: {trade['shares']:.0f} | 金额: {trade['value']:,.2f} | 盈亏: {trade['profit']:+.2f}")
+                log_print(f"  卖出: {trade['date']} | 价格: {trade['price']:.2f} | 数量: {trade['shares']:.0f} | 金额: {trade['value']:,.2f} | 盈亏: {trade['profit']:+.2f} ({trade['profit_pct']:+.2f}%)")
     
     log_print(f"{'='*140}")
     
@@ -336,3 +357,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
 
 if __name__ == "__main__":
     run_backtest()
+
+
+
+
