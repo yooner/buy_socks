@@ -36,6 +36,19 @@ UPTREND_BUYPOINT_DRAWDOWN_PCT = 0.04  # 上升趋势相对买入点回撤止损�
 # False: 禁用跳过卖出逻辑（总是卖出）
 ENABLE_SKIP_SELL_ON_BREAKOUT = False
 
+
+# 趋势转换当天大涨直接买入配置
+ENABLE_DIRECT_BUY_ON_BIG_RISE = True  # 是否启用趋势转换当天大涨直接买入
+DIRECT_BUY_RISE_THRESHOLD = 0.07      # 趋势转换当天相比前一天涨幅阈值（默认7%）
+
+# 所有上升趋势的特殊卖出配置
+ENABLE_UPTREND_SELL = True  # 是否启用所有上升趋势的特殊卖出
+UPTREND_BREAKOUT_THRESHOLD = 0.02  # 突破上一轮高点的阈值（默认2%）
+
+# 所有下降趋势的特殊买入配置
+ENABLE_DOWNTREND_BUY = True  # 是否启用所有下降趋势的特殊买入
+DOWNTREND_BREAKOUT_THRESHOLD = 0.03  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95）
+
 # 状态转换阈值配置（可配置）
 SIX_POINTS_PCT = 0.10 # 6个点对应的百分比（默认20%）
 THREE_POINTS_PCT = 0.05 # 3个点对应的百分比（默认10%）
@@ -191,6 +204,16 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     # 自然回升→上升趋势买入后的回撤止损跟踪
     uptrend_buypoint_stop_active = False
     uptrend_buypoint_price = 0.0
+    
+    # 所有上升趋势的特殊卖出跟踪（突破前高2%内，回落THREE_POINTS_PCT卖出）
+    uptrend_sell_active = False         # 是否启用上升趋势特殊卖出
+    uptrend_sell_high = 0.0             # 该上升趋势的最高点
+    uptrend_sell_ref_high = 0.0         # 上一轮上升趋势的高点
+    
+    # 所有下降趋势的特殊买入跟踪（跌破前低2%内，上涨THREE_POINTS_PCT买入）
+    downtrend_buy_active = False        # 是否启用下降趋势特殊买入
+    downtrend_buy_low = 0.0             # 该下降趋势的最低点
+    downtrend_buy_ref_low = 0.0         # 上一轮下降趋势的低点
 
     # 打印表头
     log_print(f"\n{'='*140}")
@@ -284,7 +307,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 (prev_state in UP_TRENDS and market_state in UP_TRENDS)
             )
             if can_buy_on_transition and can_buy_transition_pair:
-                if ENABLE_DELAYED_BUY_MODE:
+                # 计算相比前一天的涨幅
+                prev_day_price = df_with_states.iloc[i-1]['收盘'] if i > 0 else close_price
+                day_rise_pct = (close_price - prev_day_price) / prev_day_price if prev_day_price > 0 else 0
+                
+                # 判断是否大涨直接买入
+                is_big_rise = ENABLE_DIRECT_BUY_ON_BIG_RISE and day_rise_pct >= DIRECT_BUY_RISE_THRESHOLD
+                
+                if ENABLE_DELAYED_BUY_MODE and not is_big_rise:
                     pending_buy_signal = {
                         'transition': f"{prev_state}→{market_state}",
                         'observe_state': market_state,
@@ -296,13 +326,36 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if trade_action == "":
                         trade_action = f"[待买观察:{prev_state}→{market_state} 基准{close_price:.2f} 目标{target_price:.2f}]"
                 else:
+                    # 非延迟模式或大涨直接买入
                     buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
                     if buy_action:
-                        if trade_action == "":
-                            trade_action = f"{buy_action}(状态切换当日)"
+                        if is_big_rise:
+                            if trade_action == "":
+                                trade_action = f"{buy_action}(状态切换大涨{day_rise_pct*100:.1f}%)"
+                        else:
+                            if trade_action == "":
+                                trade_action = f"{buy_action}(状态切换当日)"
                         if prev_state == '自然回升' and market_state == '上升趋势':
                             uptrend_buypoint_stop_active = True
                             uptrend_buypoint_price = close_price
+                        
+                        # 所有上升趋势：初始化特殊卖出跟踪
+                        if ENABLE_UPTREND_SELL and market_state == '上升趋势':
+                            uptrend_sell_active = True
+                            uptrend_sell_high = close_price
+                            # 获取上一轮上升趋势的高点作为参考
+                            if pd.notna(ref_key_point):
+                                uptrend_sell_ref_high = ref_key_point
+
+            # 所有下降趋势：初始化特殊买入跟踪（在进入下降趋势时初始化）
+            if is_start and prev_state is not None and ENABLE_DOWNTREND_BUY and market_state == '下降趋势':
+                # 检查是否是从其他状态转换到下降趋势
+                if prev_state != '下降趋势':
+                    downtrend_buy_active = True
+                    downtrend_buy_low = close_price
+                    # 获取上一轮下降趋势的低点作为参考
+                    if pd.notna(ref_key_point):
+                        downtrend_buy_ref_low = ref_key_point
 
             # 卖出逻辑：仅当上升类型 → 下降类型时卖出
             if prev_state in UP_TRENDS and market_state in DOWN_TRENDS:
@@ -384,8 +437,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     pending_buy_signal = None
                 uptrend_buypoint_stop_active = False
                 uptrend_buypoint_price = 0.0
+                uptrend_sell_active = False
+                uptrend_sell_high = 0.0
+                uptrend_sell_ref_high = 0.0
+                downtrend_buy_active = False
+                downtrend_buy_low = 0.0
+                downtrend_buy_ref_low = 0.0
 
-        # 离开上升趋势时，清空“自然回升→上升趋势买入点”止损跟踪
+        # 离开上升趋势时，清空"自然回升→上升趋势买入点"止损跟踪
         if market_state != '上升趋势':
             uptrend_buypoint_stop_active = False
             uptrend_buypoint_price = 0.0
@@ -425,6 +484,83 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     pending_buy_signal = None
                 uptrend_buypoint_stop_active = False
                 uptrend_buypoint_price = 0.0
+                uptrend_sell_active = False
+                uptrend_sell_high = 0.0
+                uptrend_sell_ref_high = 0.0
+                downtrend_buy_active = False
+                downtrend_buy_low = 0.0
+                downtrend_buy_ref_low = 0.0
+
+        # 所有上升趋势的特殊卖出逻辑：在上升趋势中跟踪最高点，从高点回落THREE_POINTS_PCT时卖出
+        if ENABLE_UPTREND_SELL and uptrend_sell_active and market_state == '上升趋势' and position > 0:
+            # 更新该上升趋势的最高点
+            if close_price > uptrend_sell_high:
+                uptrend_sell_high = close_price
+            
+            # 检查当前上升趋势的最高点是否在上一轮高点的102%以内（包括未突破和突破2%以内）
+            if uptrend_sell_ref_high > 0:
+                price_ratio = uptrend_sell_high / uptrend_sell_ref_high
+                if price_ratio <= (1 + UPTREND_BREAKOUT_THRESHOLD):  # 在上一轮高点的102%以内
+                    # 计算相对上一轮高点的变化幅度
+                    if price_ratio >= 1:
+                        breakout_pct = price_ratio - 1  # 突破幅度
+                        status_str = f"突破+{breakout_pct*100:.1f}%"
+                    else:
+                        below_pct = 1 - price_ratio  # 低于幅度
+                        status_str = f"低于前高-{below_pct*100:.1f}%"
+                    
+                    # 检查是否从该上升趋势的高点回落超过THREE_POINTS_PCT
+                    drop_from_high_pct = (uptrend_sell_high - close_price) / uptrend_sell_high
+                    if drop_from_high_pct >= THREE_POINTS_PCT:  # 从高点回落超过THREE_POINTS_PCT才卖出
+                        sell_value = position * close_price
+                        profit = sell_value - invested_capital
+                        profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
+                        cash += sell_value
+                        trade_action = f"[卖出全部:上升趋势结束({status_str}后回落{drop_from_high_pct*100:.1f}%)]"
+                        trades.append({
+                            'date': date_str,
+                            'action': '卖出',
+                            'price': close_price,
+                            'shares': position,
+                            'value': sell_value,
+                            'profit': profit,
+                            'profit_pct': profit_pct
+                        })
+                        position = 0
+                        position_cost = 0
+                        position_count = 0
+                        last_buy_price = 0
+                        invested_capital = 0
+                        fixed_position_value = 0
+                        pending_buy_signal = None
+                        uptrend_buypoint_stop_active = False
+                        uptrend_buypoint_price = 0.0
+                        uptrend_sell_active = False
+                        uptrend_sell_high = 0.0
+                        uptrend_sell_ref_high = 0.0
+
+        # 所有下降趋势的特殊买入逻辑：在下降趋势中跟踪最低点，从低点上涨THREE_POINTS_PCT时买入
+        if ENABLE_DOWNTREND_BUY and downtrend_buy_active and market_state == '下降趋势' and position == 0:
+            # 更新该下降趋势的最低点
+            if close_price < downtrend_buy_low:
+                downtrend_buy_low = close_price
+            
+            # 检查当前下降趋势的最低点是否没有跌破上一轮低点（即当前低点 >= 前低）
+            if downtrend_buy_ref_low > 0:
+                if downtrend_buy_low >= downtrend_buy_ref_low:  # 必须没有跌破前低
+                    # 计算高于前低的幅度
+                    above_pct = (downtrend_buy_low - downtrend_buy_ref_low) / downtrend_buy_ref_low
+                    status_str = f"未破前低+{above_pct*100:.1f}%"
+                    
+                    # 检查是否从该下降趋势的低点上涨超过THREE_POINTS_PCT
+                    rise_from_low_pct = (close_price - downtrend_buy_low) / downtrend_buy_low
+                    if rise_from_low_pct >= THREE_POINTS_PCT:  # 从低点上涨超过THREE_POINTS_PCT才买入
+                        buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
+                        if buy_action:
+                            trade_action = f"{buy_action}(下降趋势结束:{status_str}后上涨{rise_from_low_pct*100:.1f}%)"
+                            downtrend_buy_active = False
+                            downtrend_buy_low = 0.0
+                            downtrend_buy_ref_low = 0.0
 
         # 已按需求移除加仓逻辑：只保留状态转换触发的买入
         # 更新前一天的状态

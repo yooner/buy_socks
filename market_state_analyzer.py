@@ -1,4 +1,4 @@
-﻿"""
+"""
 市场六状态分析器
 基于利弗莫尔市场关键点理论
 
@@ -326,10 +326,21 @@ class MarketStateAnalyzer:
                         self.natural_reaction_low = price
                 return MarketState.DOWN_TREND
             
-            # 自然回撤 → 自然回升/次级回升: 从最低点上升6个点(20%)
+            # 自然回撤 → 自然回升/次级回升/上升趋势: 从最低点上升6个点(20%)
             if self.current_natural_reaction_low:
                 rise_pct = (price - self.current_natural_reaction_low) / self.current_natural_reaction_low
                 if rise_pct >= self.SIX_POINTS:
+                    # 判断是否可以直接转为上升趋势（突破上一轮自然回升高点超过3个点）
+                    if self.last_natural_rally_high and price > self.last_natural_rally_high:
+                        rise_pct_from_last_rally = (price - self.last_natural_rally_high) / self.last_natural_rally_high
+                        if rise_pct_from_last_rally >= self.THREE_POINTS:
+                            # 直接转为上升趋势
+                            self.up_trend_high = price
+                            if self.natural_rally_high is None or price > self.natural_rally_high:
+                                self.natural_rally_high = price
+                            self._reset_state_tracking()
+                            return MarketState.UP_TREND
+                    
                     # 判断是次级回升还是自然回升
                     # 使用上一次自然回升的高点来判断（不是历史最高点）
                     if self.last_natural_rally_high is None or price > self.last_natural_rally_high:
@@ -392,10 +403,21 @@ class MarketStateAnalyzer:
                 self._reset_state_tracking()  # 进入新趋势，重置跟踪变量
                 return MarketState.UP_TREND
             
-            # 自然回升 → 自然回撤/次级回撤: 从最高点下降6个点(20%)
+            # 自然回升 → 自然回撤/次级回撤/下降趋势: 从最高点下降6个点(20%)
             if self.current_natural_rally_high:
                 drop_pct = (self.current_natural_rally_high - price) / self.current_natural_rally_high
                 if drop_pct >= self.SIX_POINTS:
+                    # 判断是否可以直接转为下降趋势（跌破上一轮自然回撤低点超过3个点）
+                    if self.last_natural_reaction_low and price < self.last_natural_reaction_low:
+                        drop_pct_from_last_reaction = (self.last_natural_reaction_low - price) / self.last_natural_reaction_low
+                        if drop_pct_from_last_reaction >= self.THREE_POINTS:
+                            # 直接转为下降趋势
+                            self.down_trend_low = price
+                            if self.natural_reaction_low is None or price < self.natural_reaction_low:
+                                self.natural_reaction_low = price
+                            self._reset_state_tracking()
+                            return MarketState.DOWN_TREND
+                    
                     # 判断是次级回撤还是自然回撤
                     # 使用自然回撤低点作为基准：跌破则自然回撤，否则次级回撤
                     if self.last_natural_reaction_low is None or price < self.last_natural_reaction_low:
