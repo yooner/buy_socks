@@ -23,11 +23,22 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
 POSITION_COUNT = 1  # 分仓数量（默认3仓）
-ADD_POSITION_THRESHOLD = 0.02  # 加仓阈值，每上涨3%买入下一仓
+ADD_POSITION_THRESHOLD = 0.01  # 加仓阈值，每上涨3%买入下一仓
+
+BREAKOUT_THRESHOLD = 0.02  # 突破阈值3%
+BUY_DELAY_RISE_PCT = 0.02  # 所有买点统一延迟买入阈值（相对状态切换点上涨3%）
+ENABLE_DELAYED_BUY_MODE = True # 延迟买入开关：True=延迟观察买入，False=状态切换当日直接买入
+ENABLE_UPTREND_BUYPOINT_DRAWDOWN_SELL = True  # 自然回升→上升趋势后的回撤止损开关
+UPTREND_BUYPOINT_DRAWDOWN_PCT = 0.04  # 上升趋势相对买入点回撤止损阈值（默认3%）
+
+# 上升趋势→自然回撤跳过卖出开关
+# True: 启用跳过卖出逻辑（突破前高超过阈值时跳过卖出）
+# False: 禁用跳过卖出逻辑（总是卖出）
+ENABLE_SKIP_SELL_ON_BREAKOUT = False
 
 # 状态转换阈值配置（可配置）
-SIX_POINTS_PCT = 0.09 # 6个点对应的百分比（默认20%）
-THREE_POINTS_PCT = 0.045 # 3个点对应的百分比（默认10%）
+SIX_POINTS_PCT = 0.10 # 6个点对应的百分比（默认20%）
+THREE_POINTS_PCT = 0.05 # 3个点对应的百分比（默认10%）
 
 
 def get_output_file_path(base_name="out_put.txt"):
@@ -134,6 +145,53 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         print(line, **kwargs)
         output_lines.append(line)
 
+    # 记录最近一次买入（用于“买入后第二天转跌”的观察基准）
+    last_transition_buy_idx = -999999
+    last_transition_buy_price = 0.0
+    def execute_transition_buy(date_str: str, close_price: float, current_total_value: float, day_idx: int):
+        """执行一次买入，返回动作文本（失败返回空字符串）"""
+        nonlocal cash, position, position_cost, position_count, last_buy_price, invested_capital, fixed_position_value, last_transition_buy_idx, last_transition_buy_price
+
+        if position_count >= POSITION_COUNT:
+            return ""
+
+        if position_count == 0:
+            fixed_position_value = current_total_value / POSITION_COUNT
+        position_value = fixed_position_value
+        if cash < position_value * 0.99:
+            return ""
+
+        shares = position_value / close_price
+        prev_position = position
+        position += shares
+        if prev_position <= 0:
+            position_cost = close_price
+        else:
+            total_cost = position_cost * prev_position + close_price * shares
+            position_cost = total_cost / position
+        invested_capital += shares * close_price
+        cash -= shares * close_price
+        position_count += 1
+        last_buy_price = close_price
+        last_transition_buy_idx = day_idx
+        last_transition_buy_price = close_price
+
+        trades.append({
+            'date': date_str,
+            'action': '买入',
+            'position_num': position_count,
+            'price': close_price,
+            'shares': shares,
+            'value': shares * close_price
+        })
+        return f"[买入{position_count}/{POSITION_COUNT}]"
+
+    # 全局延迟买入状态：所有买点先记录切换价格，等待上涨到阈值后再买
+    pending_buy_signal = None
+    # 自然回升→上升趋势买入后的回撤止损跟踪
+    uptrend_buypoint_stop_active = False
+    uptrend_buypoint_price = 0.0
+
     # 打印表头
     log_print(f"\n{'='*140}")
     log_print(f"股票代码: {stock_code}")
@@ -178,57 +236,75 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         
         # ===== 买卖逻辑 =====
         trade_action = ""
-        
+
         # 计算当前总资金（现金 + 持仓市值）
         current_total_value = cash + position * close_price
-        
+
         # 检查是否发生状态转换
         should_sell = False
-        bought_on_transition = False
+        # 特殊场景：卖出发生时是否保留待买观察信号
+        keep_pending_after_sell = False
+
+        # 先处理待买观察：若状态变化则复位，若上涨达到阈值则买入
+        if ENABLE_DELAYED_BUY_MODE and pending_buy_signal is not None:
+            observe_state = pending_buy_signal['observe_state']
+            base_price = pending_buy_signal['base_price']
+            trigger_price = base_price * (1 + BUY_DELAY_RISE_PCT)
+
+            if market_state != observe_state:
+                # 上升类型→上升类型：继续观察不复位；其它变化（尤其上升→下降）复位
+                start_idx = pending_buy_signal.get('start_idx', -999999)
+                # 仅在相邻两天内的上升类型→上升类型状态变化，保留待买观察
+                keep_observing = (observe_state in UP_TRENDS and market_state in UP_TRENDS and (i - start_idx) <= 1)
+                if not keep_observing:
+                    pending_buy_signal = None
+                    if trade_action == "":
+                        trade_action = f"[待买复位: 状态{observe_state}→{market_state}]"
+            if pending_buy_signal is not None and close_price >= trigger_price:
+                buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
+                if buy_action:
+                    transition_name = pending_buy_signal['transition']
+                    trade_action = f"{buy_action}(由待买触发:{transition_name} 基准{base_price:.2f} 目标{trigger_price:.2f})"
+                    if transition_name == '自然回升→上升趋势':
+                        uptrend_buypoint_stop_active = True
+                        uptrend_buypoint_price = close_price
+                pending_buy_signal = None
+
         if is_start and prev_state is not None:
-            # 买入逻辑：仅当下降类型 → 上升类型时买入
+            # 买入条件判定
             can_buy_on_transition = True
             if prev_state == '下降趋势' and market_state == '自然回升' and not allow_buy_down_to_rally:
                 can_buy_on_transition = False
                 if trade_action == "":
                     trade_action = "[跳过买入: 下行破前低]"
-            # 买入逻辑：下降类型→上升类型，或上升类型→上升类型，均可买入
+
+            # 买入逻辑：下降类型→上升类型，或上升类型→上升类型
             can_buy_transition_pair = (
                 (prev_state in DOWN_TRENDS and market_state in UP_TRENDS) or
                 (prev_state in UP_TRENDS and market_state in UP_TRENDS)
             )
             if can_buy_on_transition and can_buy_transition_pair:
-                if position_count < POSITION_COUNT:
-                    # 第一仓时固定每仓金额，后续沿用固定每仓金额
-                    if position_count == 0:
-                        fixed_position_value = current_total_value / POSITION_COUNT
-                    position_value = fixed_position_value
-                    if cash >= position_value * 0.99:
-                        shares = position_value / close_price
-                        prev_position = position
-                        position += shares
-                        if prev_position <= 0:
-                            position_cost = close_price
-                        else:
-                            total_cost = position_cost * prev_position + close_price * shares
-                            position_cost = total_cost / position
-                        invested_capital += shares * close_price
-                        cash -= shares * close_price
-                        position_count += 1
-                        last_buy_price = close_price
-                        trade_action = f"[买入{position_count}/{POSITION_COUNT}]"
-                        trades.append({
-                            'date': date_str,
-                            'action': '买入',
-                            'position_num': position_count,
-                            'price': close_price,
-                            'shares': shares,
-                            'value': shares * close_price
-                        })
-                        bought_on_transition = True
+                if ENABLE_DELAYED_BUY_MODE:
+                    pending_buy_signal = {
+                        'transition': f"{prev_state}→{market_state}",
+                        'observe_state': market_state,
+                        'base_price': close_price,
+                        'start_date': date_str,
+                        'start_idx': i
+                    }
+                    target_price = close_price * (1 + BUY_DELAY_RISE_PCT)
+                    if trade_action == "":
+                        trade_action = f"[待买观察:{prev_state}→{market_state} 基准{close_price:.2f} 目标{target_price:.2f}]"
+                else:
+                    buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
+                    if buy_action:
+                        if trade_action == "":
+                            trade_action = f"{buy_action}(状态切换当日)"
+                        if prev_state == '自然回升' and market_state == '上升趋势':
+                            uptrend_buypoint_stop_active = True
+                            uptrend_buypoint_price = close_price
 
             # 卖出逻辑：仅当上升类型 → 下降类型时卖出
-            # 特例：上升趋势 → 自然回撤，若“本轮上升趋势高点”突破“上一轮上升趋势高点”则不卖
             if prev_state in UP_TRENDS and market_state in DOWN_TRENDS:
                 should_sell = True
 
@@ -236,34 +312,53 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             if prev_state in DOWN_TRENDS and market_state in DOWN_TRENDS:
                 should_sell = True
 
+            # 仅在“买入后第二天”且价格下跌时：保留已完成买入，并以买入价为基准重启观察
+            if (
+                ENABLE_DELAYED_BUY_MODE and
+                (i - last_transition_buy_idx) == 1 and
+                last_transition_buy_price > 0 and
+                close_price < last_transition_buy_price
+            ):
+                pending_buy_signal = {
+                    'transition': '买后次日观察:价格下跌',
+                    'observe_state': market_state,
+                    'base_price': last_transition_buy_price,
+                    'start_date': date_str,
+                    'start_idx': i
+                }
+                keep_pending_after_sell = True
+                if trade_action == "":
+                    target_price = last_transition_buy_price * (1 + BUY_DELAY_RISE_PCT)
+                    trade_action = f"[买后次日观察:基准{last_transition_buy_price:.2f} 目标{target_price:.2f}]"
+
             # 特例: 上升趋势 → 自然回撤
-            if prev_state == '上升趋势' and market_state == '自然回撤':
+            # 只有当启用开关且突破前高超过阈值时才跳过卖出，否则仍然卖出
+            if prev_state == '上升趋势' and market_state == '自然回撤' and ENABLE_SKIP_SELL_ON_BREAKOUT:
                 current_up_trend_high = df_with_states.iloc[i - 1]['key_point'] if i > 0 else None
-                broke_prev_up_high = (
+
+                broke_prev_up_high_with_threshold = (
                     last_up_trend_high is not None and
                     pd.notna(current_up_trend_high) and
-                    current_up_trend_high > last_up_trend_high
+                    current_up_trend_high > last_up_trend_high * (1 + BREAKOUT_THRESHOLD)
                 )
-                if broke_prev_up_high:
+                if broke_prev_up_high_with_threshold:
                     should_sell = False
                     if trade_action == "":
-                        trade_action = "[跳过卖出: 上升突破前高]"
+                        breakout_pct = ((current_up_trend_high - last_up_trend_high) / last_up_trend_high) * 100
+                        trade_action = f"[跳过卖出: 上升突破前高+{breakout_pct:.1f}%]"
 
                 # 上升趋势结束，更新“上一次上升趋势高点”供下一轮比较
                 if pd.notna(current_up_trend_high):
                     last_up_trend_high = current_up_trend_high
-            
+
             # 自然回升→上升趋势：记录“上一轮上升趋势高点”作为后续卖出比较基准
             if prev_state == '自然回升' and market_state == '上升趋势':
                 # 优先使用状态分析器给出的参考点（上一轮上升趋势高点）
                 if pd.notna(ref_key_point):
                     last_up_trend_high = ref_key_point
-                else:
-                    # 兜底：若参考点缺失，保留原基准不变，避免错误抬高比较线
-                    pass
                 # 进入新上升趋势时清空旧标记，是否卖出由后续“上升趋势→自然回撤”实时比较决定
                 sell_on_next_up_trend_to_reaction = False
-            
+
             if should_sell and position > 0:
                 sell_value = position * close_price
                 profit = sell_value - invested_capital
@@ -285,6 +380,51 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 last_buy_price = 0
                 invested_capital = 0
                 fixed_position_value = 0
+                if not keep_pending_after_sell:
+                    pending_buy_signal = None
+                uptrend_buypoint_stop_active = False
+                uptrend_buypoint_price = 0.0
+
+        # 离开上升趋势时，清空“自然回升→上升趋势买入点”止损跟踪
+        if market_state != '上升趋势':
+            uptrend_buypoint_stop_active = False
+            uptrend_buypoint_price = 0.0
+
+        # 新增卖出条件：自然回升→上升趋势买入后，若上升趋势内相对买入点回撤超阈值则卖出
+        if (
+            ENABLE_UPTREND_BUYPOINT_DRAWDOWN_SELL and
+            uptrend_buypoint_stop_active and
+            uptrend_buypoint_price > 0 and
+            market_state == '上升趋势' and
+            position > 0
+        ):
+            drawdown_pct = (uptrend_buypoint_price - close_price) / uptrend_buypoint_price
+            if drawdown_pct >= UPTREND_BUYPOINT_DRAWDOWN_PCT:
+                sell_value = position * close_price
+                profit = sell_value - invested_capital
+                profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
+                cash += sell_value
+                dd_pct = drawdown_pct * 100
+                trade_action = f"[卖出全部:上升趋势回撤止损-{dd_pct:.2f}%]"
+                trades.append({
+                    'date': date_str,
+                    'action': '卖出',
+                    'price': close_price,
+                    'shares': position,
+                    'value': sell_value,
+                    'profit': profit,
+                    'profit_pct': profit_pct
+                })
+                position = 0
+                position_cost = 0
+                position_count = 0
+                last_buy_price = 0
+                invested_capital = 0
+                fixed_position_value = 0
+                if not keep_pending_after_sell:
+                    pending_buy_signal = None
+                uptrend_buypoint_stop_active = False
+                uptrend_buypoint_price = 0.0
 
         # 已按需求移除加仓逻辑：只保留状态转换触发的买入
         # 更新前一天的状态
@@ -357,6 +497,16 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
 
 if __name__ == "__main__":
     run_backtest()
+
+
+
+
+
+
+
+
+
+
 
 
 
