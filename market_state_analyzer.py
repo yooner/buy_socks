@@ -1,4 +1,4 @@
-"""
+﻿"""
 市场六状态分析器
 基于利弗莫尔市场关键点理论
 
@@ -58,19 +58,79 @@ class DailyState:
     ref_key_point: Optional[float] = None  # 参考关键点（自然回撤参考下降趋势最低点，自然回升参考上升趋势最高点）
     notes: str = ""
     allow_buy_down_to_rally: bool = True  # 下降趋势→自然回升时是否允许买入
+    last_down_trend_low: Optional[float] = None  # 上一次下降趋势的最低点（用于自然回升突破前低买入）
 
 
 class MarketStateAnalyzer:
-    """市场状态分析器"""
+    """市场状态分析器
     
-    def __init__(self, six_points_pct: float = 0.20, three_points_pct: float = 0.10):
+    支持两种模式：
+    1. 百分比模式：传入 six_points_pct 和 three_points_pct
+    2. 固定数值模式：传入 six_points_func 和 three_points_func，根据价格动态获取固定数值
+    """
+    
+    def __init__(self, six_points_pct: float = None, three_points_pct: float = None, 
+                 six_points_func=None, three_points_func=None):
         # 转换阈值（可配置）
-        self.SIX_POINTS = six_points_pct      # 6个点对应的百分比
-        self.THREE_POINTS = three_points_pct  # 3个点对应的百分比
+        # 百分比模式（旧模式）
+        self.SIX_POINTS_PCT = six_points_pct      # 6个点对应的百分比
+        self.THREE_POINTS_PCT = three_points_pct  # 3个点对应的百分比
+        
+        # 固定数值模式（新模式）：传入函数，根据当前价格获取固定数值（元）
+        self.six_points_func = six_points_func    # 函数：根据价格获取6个点对应的固定数值
+        self.three_points_func = three_points_func  # 函数：根据价格获取3个点对应的固定数值
+        
+        # 判断使用哪种模式
+        self.use_fixed_value_mode = six_points_func is not None and three_points_func is not None
         
         self.segments: List[StateSegment] = []
         self.daily_states: List[DailyState] = []
         
+        # 初始化状态跟踪变量
+        self._initialize_state_tracking()
+        
+    def _get_six_points(self, price: float) -> float:
+        """获取6个点对应的阈值
+        
+        根据模式不同，返回百分比
+        
+        固定数值模式下，将固定数值（元）除以价格转换为百分比
+        
+        Args:
+            price: 当前价格
+            
+        Returns:
+            6个点对应的阈值（百分比）
+        """
+        if self.use_fixed_value_mode:
+            fixed_value = self.six_points_func(price)
+            if fixed_value is None:
+                return 0.20  # 默认 fallback 20%
+            return fixed_value / price
+        return self.SIX_POINTS_PCT
+    
+    def _get_three_points(self, price: float) -> float:
+        """获取3个点对应的阈值
+        
+        根据模式不同，返回百分比
+        
+        固定数值模式下，将固定数值（元）除以价格转换为百分比
+        
+        Args:
+            price: 当前价格
+            
+        Returns:
+            3个点对应的阈值（百分比）
+        """
+        if self.use_fixed_value_mode:
+            fixed_value = self.three_points_func(price)
+            if fixed_value is None:
+                return 0.10  # 默认 fallback 10%
+            return fixed_value / price
+        return self.THREE_POINTS_PCT
+
+    def _initialize_state_tracking(self):
+        """初始化状态跟踪变量"""
         # 各状态的关键点记录 - 记录历史上各状态的关键价位
         self.natural_rally_high: Optional[float] = None  # 自然回升历史最高点
         self.natural_reaction_low: Optional[float] = None  # 自然回撤历史最低点
@@ -135,6 +195,7 @@ class MarketStateAnalyzer:
         df['ref_key_point'] = [ds.ref_key_point for ds in self.daily_states]
         df['allow_buy_down_to_rally'] = [ds.allow_buy_down_to_rally for ds in self.daily_states]
         df['state_notes'] = [ds.notes for ds in self.daily_states]
+        df['last_down_trend_low'] = [ds.last_down_trend_low for ds in self.daily_states]
         
         return df
     
@@ -272,19 +333,23 @@ class MarketStateAnalyzer:
             key_point=self.current_segment.key_point if self.current_segment else None,
             ref_key_point=ref_key_point,
             notes=notes,
-            allow_buy_down_to_rally=allow_buy_down_to_rally
+            allow_buy_down_to_rally=allow_buy_down_to_rally,
+            last_down_trend_low=self.last_down_trend_low
         )
         self.daily_states.append(daily)
     
     def _determine_state(self, price: float, prev_price: float, date_str: str = "") -> MarketState:
         """根据当前价格判断状态"""
+        # 获取当前价格对应的阈值
+        six_points = self._get_six_points(price)
+        three_points = self._get_three_points(price)
         
         if self.current_state == MarketState.UP_TREND:
             # 上升趋势 → 自然回撤: 最高点下降6个点(20%)
             # 注意：上升趋势只能转为自然回撤，不能直接转为次级回撤
             if self.up_trend_high:
                 drop_pct = (self.up_trend_high - price) / self.up_trend_high
-                if drop_pct >= self.SIX_POINTS:
+                if drop_pct >= six_points:
                     # 转为自然回撤
                     self.current_natural_reaction_low = price
                     # 更新历史最低点和上一次自然回撤低点
@@ -307,7 +372,7 @@ class MarketStateAnalyzer:
             # 条件1: 相比上一次自然回撤低点下跌 THREE_POINTS_PCT
             if self.last_natural_reaction_low:
                 drop_pct_from_last_natural_reaction_low = (self.last_natural_reaction_low - price) / self.last_natural_reaction_low
-                if drop_pct_from_last_natural_reaction_low >= self.THREE_POINTS:
+                if drop_pct_from_last_natural_reaction_low >= three_points:
                     can_convert_to_downtrend = True
                     ref_price_for_note = self.last_natural_reaction_low
             
@@ -329,11 +394,11 @@ class MarketStateAnalyzer:
             # 自然回撤 → 自然回升/次级回升/上升趋势: 从最低点上升6个点(20%)
             if self.current_natural_reaction_low:
                 rise_pct = (price - self.current_natural_reaction_low) / self.current_natural_reaction_low
-                if rise_pct >= self.SIX_POINTS:
+                if rise_pct >= six_points:
                     # 判断是否可以直接转为上升趋势（突破上一轮自然回升高点超过3个点）
                     if self.last_natural_rally_high and price > self.last_natural_rally_high:
                         rise_pct_from_last_rally = (price - self.last_natural_rally_high) / self.last_natural_rally_high
-                        if rise_pct_from_last_rally >= self.THREE_POINTS:
+                        if rise_pct_from_last_rally >= three_points:
                             # 直接转为上升趋势
                             self.up_trend_high = price
                             if self.natural_rally_high is None or price > self.natural_rally_high:
@@ -362,7 +427,7 @@ class MarketStateAnalyzer:
             # 注意：下降趋势只能转为自然回升，不能直接转为次级回升
             if self.down_trend_low:
                 rise_pct = (price - self.down_trend_low) / self.down_trend_low
-                if rise_pct >= self.SIX_POINTS:
+                if rise_pct >= six_points:
                     # 转为自然回升
                     self.current_natural_rally_high = price
                     # 更新历史自然回升高点和上一次自然回升高点
@@ -386,7 +451,7 @@ class MarketStateAnalyzer:
             # 条件1: 突破上一轮自然回升最高点 THREE_POINTS_PCT
             if self.last_natural_rally_high:
                 rise_pct_from_last_natural_rally_high = (price - self.last_natural_rally_high) / self.last_natural_rally_high
-                if rise_pct_from_last_natural_rally_high >= self.THREE_POINTS:
+                if rise_pct_from_last_natural_rally_high >= three_points:
                     can_convert_to_uptrend = True
                     ref_price_for_note = self.last_natural_rally_high
             
@@ -406,11 +471,11 @@ class MarketStateAnalyzer:
             # 自然回升 → 自然回撤/次级回撤/下降趋势: 从最高点下降6个点(20%)
             if self.current_natural_rally_high:
                 drop_pct = (self.current_natural_rally_high - price) / self.current_natural_rally_high
-                if drop_pct >= self.SIX_POINTS:
+                if drop_pct >= six_points:
                     # 判断是否可以直接转为下降趋势（跌破上一轮自然回撤低点超过3个点）
                     if self.last_natural_reaction_low and price < self.last_natural_reaction_low:
                         drop_pct_from_last_reaction = (self.last_natural_reaction_low - price) / self.last_natural_reaction_low
-                        if drop_pct_from_last_reaction >= self.THREE_POINTS:
+                        if drop_pct_from_last_reaction >= three_points:
                             # 直接转为下降趋势
                             self.down_trend_low = price
                             if self.natural_reaction_low is None or price < self.natural_reaction_low:
@@ -450,7 +515,7 @@ class MarketStateAnalyzer:
             # 次级回升 → 次级回撤: 从最高点下降6个点(20%)，但没有跌破自然回撤低点
             if self.secondary_rally_high:
                 drop_pct = (self.secondary_rally_high - price) / self.secondary_rally_high
-                if drop_pct >= self.SIX_POINTS:
+                if drop_pct >= six_points:
                     if self.last_natural_reaction_low and price >= self.last_natural_reaction_low:
                         # 没有跌破自然回撤低点，是次级回撤
                         self.secondary_reaction_low = price
@@ -475,7 +540,7 @@ class MarketStateAnalyzer:
             # 次级回撤 → 次级回升: 相比次级回撤自身低点上升 SIX_POINTS
             if self.secondary_reaction_low:
                 rise_pct = (price - self.secondary_reaction_low) / self.secondary_reaction_low
-                if rise_pct >= self.SIX_POINTS:
+                if rise_pct >= six_points:
                     # 使用历史上自然回升的最高点来判断是否突破
                     historical_rally_high = self.last_natural_rally_high
                     if historical_rally_high and price > historical_rally_high:

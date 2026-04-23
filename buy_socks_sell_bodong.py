@@ -46,19 +46,74 @@ UPTREND_BREAKOUT_THRESHOLD = 0.02  # 突破上一轮高点的阈值（默认2%�
 ENABLE_NATURAL_RALLY_SELL = True  # 是否启用自然回升的特殊卖出
 NATURAL_RALLY_BREAKOUT_THRESHOLD = 0.02  # 突破前一轮自然回升高点的阈值（默认2%）
 
+# 自然回升中超过前低买入配置（下降趋势→自然回升因破前低跳过买入后，在自然回升中超过前低时买入）
+ENABLE_NATURAL_RALLY_BREAKOUT_BUY = True  # 是否启用自然回升中超过前低买入
+NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD = 0.02  # 超过前低的阈值（默认0%，即价格 >= 前低)
+
 # 所有自然回撤的特殊买入配置
 ENABLE_NATURAL_REACTION_BUY = True  # 是否启用自然回撤的特殊买入
 NATURAL_REACTION_BREAKOUT_THRESHOLD = 0.02  # 相对前一轮自然回撤低点的阈值（默认2%，即当前低点 >= 前低 * 0.98)
 
 # 所有下降趋势的特殊买入配置
 ENABLE_DOWNTREND_BUY = True  # 是否启用所有下降趋势的特殊买入
-DOWNTREND_BREAKOUT_THRESHOLD = 0.03  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95)
+DOWNTREND_BREAKOUT_THRESHOLD = 0.02  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95)
 ENABLE_DOWNTREND_BUY_DELAY = False  # 下降趋势结束买入延迟观察开关
 DOWNTREND_BUY_DELAY_PCT = 0.02  # 下降趋势结束延迟买入阈值（相对触发点上涨2%）
 
-# 状态转换阈值配置（可配置）
-SIX_POINTS_PCT = 0.10 # 6个点对应的百分比（默认20%）
-THREE_POINTS_PCT = 0.05 # 3个点对应的百分比（默认10%）
+# 状态转换阈值配置（固定数值：元，不再是百分比）
+# 根据股价区间设置6个点对应的固定数值（元），THREE_POINTS自动为SIX_POINTS的一半
+# 股价 < 5元：不操作
+# 5~15元：SIX_POINTS = 1.2元
+# 15~40元：SIX_POINTS = 3元
+# 40~80元：SIX_POINTS = 6元
+# 80~200元：SIX_POINTS = 12元
+SIX_POINTS_CONFIG = {
+    (5, 15): 1.2,      # 5~15元：1.2元
+    (15, 40): 3.0,     # 15~40元：3元
+    (40, 80): 6.0,     # 40~80元：6元
+    (80, 200): 12.0,   # 80~200元：12元
+}
+MIN_PRICE_TO_OPERATE = 5.0  # 最小操作股价（低于此价格不操作）
+
+
+def get_six_points_by_price(price: float) -> float:
+    """根据股价获取对应的SIX_POINTS数值（元）
+    
+    Args:
+        price: 当前股价
+        
+    Returns:
+        SIX_POINTS数值（元），如果股价不在配置范围内返回None
+    """
+    if price < MIN_PRICE_TO_OPERATE:
+        return None
+    
+    for (low, high), value in SIX_POINTS_CONFIG.items():
+        if low <= price < high:
+            return value
+    
+    # 如果股价超过200元，使用最高档位
+    if price >= 200:
+        return SIX_POINTS_CONFIG[(80, 200)]
+    
+    return None
+
+
+def get_three_points_by_price(price: float) -> float:
+    """根据股价获取对应的THREE_POINTS数值（元）
+    
+    THREE_POINTS自动为SIX_POINTS的一半
+    
+    Args:
+        price: 当前股价
+        
+    Returns:
+        THREE_POINTS数值（元），如果股价不在配置范围内返回None
+    """
+    six_points = get_six_points_by_price(price)
+    if six_points is None:
+        return None
+    return six_points / 2
 
 
 def get_output_file_path(base_name="out_put.txt"):
@@ -137,10 +192,10 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     # 交易记录
     trades = []
     
-    # 初始化市场状态分析器（传入可配置的阈值参数）
+    # 初始化市场状态分析器（传入固定数值函数）
     state_analyzer = MarketStateAnalyzer(
-        six_points_pct=SIX_POINTS_PCT,
-        three_points_pct=THREE_POINTS_PCT
+        six_points_func=get_six_points_by_price,
+        three_points_func=get_three_points_by_price
     )
     df_with_states = state_analyzer.analyze(df, price_col='收盘', date_col='date')
     
@@ -235,17 +290,21 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     # 全局延迟买入状态：所有买点先记录切换价格，等待上涨到阈值后再买
     pending_buy_signal = None
     
-    # 所有上升趋势的特殊卖出跟踪（突破前高2%内，回落THREE_POINTS_PCT卖出）
+    # 所有上升趋势的特殊卖出跟踪（突破前高2%内，回落THREE_POINTS卖出）
     uptrend_sell_active = False         # 是否启用上升趋势特殊卖出
     uptrend_sell_high = 0.0             # 该上升趋势的最高点
     uptrend_sell_ref_high = 0.0         # 上一轮上升趋势的高点
     
-    # 所有自然回升的特殊卖出跟踪（突破前高2%内，回落THREE_POINTS_PCT卖出）
+    # 所有自然回升的特殊卖出跟踪（突破前高2%内，回落THREE_POINTS卖出）
     natural_rally_sell_active = False   # 是否启用自然回升特殊卖出
     natural_rally_sell_high = 0.0       # 该自然回升的最高点
     natural_rally_sell_ref_high = 0.0   # 上一轮自然回升的高点
     
-    # 所有下降趋势的特殊买入跟踪（跌破前低2%内，上涨THREE_POINTS_PCT买入）
+    # 自然回升中超过前低买入跟踪（下降趋势→自然回升因破前低跳过买入后，在自然回升中超过前低时买入）
+    natural_rally_breakout_buy_active = False  # 是否启用自然回升突破前低买入
+    natural_rally_breakout_ref_low = 0.0       # 前一轮下降趋势的低点（突破目标）
+    
+    # 所有下降趋势的特殊买入跟踪（跌破前低2%内，上涨THREE_POINTS买入）
     downtrend_buy_active = False        # 是否启用下降趋势特殊买入
     downtrend_buy_low = 0.0             # 该下降趋势的最低点
     downtrend_buy_ref_low = 0.0         # 上一轮下降趋势的低点
@@ -254,7 +313,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     downtrend_buy_pending = False       # 是否处于下降趋势结束待买入观察状态
     downtrend_buy_trigger_price = 0.0   # 下降趋势结束触发买入的价格（观察基准价）
     
-    # 所有自然回撤的特殊买入跟踪（未跌破前低2%内，上涨THREE_POINTS_PCT买入）
+    # 所有自然回撤的特殊买入跟踪（未跌破前低2%内，上涨THREE_POINTS买入）
     natural_reaction_buy_active = False  # 是否启用自然回撤特殊买入
     natural_reaction_buy_low = 0.0       # 该自然回撤的最低点
     natural_reaction_buy_ref_low = 0.0   # 上一轮自然回撤的低点
@@ -288,6 +347,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
         ref_key_point = row.get('ref_key_point', None)
         notes = row['state_notes']
         allow_buy_down_to_rally = row.get('allow_buy_down_to_rally', True)
+        last_down_trend_low = row.get('last_down_trend_low', None)
         
         # 段落标记（同一天可能既是结束也是开始）
         segment_marker = ""
@@ -346,6 +406,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 can_buy_on_transition = False
                 if trade_action == "":
                     trade_action = "[跳过买入: 下行破前低]"
+                # 激活自然回升突破前低买入跟踪
+                if ENABLE_NATURAL_RALLY_BREAKOUT_BUY:
+                    natural_rally_breakout_buy_active = True
+                    # 记录前一轮下降趋势的低点（last_down_trend_low）
+                    if pd.notna(last_down_trend_low):
+                        natural_rally_breakout_ref_low = last_down_trend_low
+                    if trade_action == "[跳过买入: 下行破前低]":
+                        trade_action = f"[跳过买入: 下行破前低(前低{natural_rally_breakout_ref_low:.2f})]"
 
             # 买入逻辑：下降类型→上升类型，或上升类型→上升类型
             can_buy_transition_pair = (
@@ -382,13 +450,6 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         else:
                             if trade_action == "":
                                 trade_action = f"{buy_action}(状态切换当日)"
-                        # 所有上升趋势：初始化特殊卖出跟踪
-                        if ENABLE_UPTREND_SELL and market_state == '上升趋势':
-                            uptrend_sell_active = True
-                            uptrend_sell_high = close_price
-                            # 获取上一轮上升趋势的高点作为参考
-                            if pd.notna(ref_key_point):
-                                uptrend_sell_ref_high = ref_key_point
 
             # 所有下降趋势：初始化特殊买入跟踪（在进入下降趋势时初始化）
             if is_start and prev_state is not None and ENABLE_DOWNTREND_BUY and market_state == '下降趋势':
@@ -455,6 +516,16 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 # 进入新上升趋势时清空旧标记，是否卖出由后续"上升趋势→自然回撤"实时比较决定
                 sell_on_next_up_trend_to_reaction = False
 
+            # 任意状态→上升趋势：初始化上升趋势特殊卖出跟踪
+            if is_start and prev_state is not None and ENABLE_UPTREND_SELL and market_state == '上升趋势':
+                # 检查是否是从其他状态转换到上升趋势
+                if prev_state != '上升趋势':
+                    uptrend_sell_active = True
+                    uptrend_sell_high = close_price
+                    # 获取上一轮上升趋势的高点作为参考
+                    if pd.notna(ref_key_point):
+                        uptrend_sell_ref_high = ref_key_point
+
             # 任意状态→自然回升：初始化自然回升特殊卖出跟踪
             if is_start and prev_state is not None and ENABLE_NATURAL_RALLY_SELL and market_state == '自然回升':
                 # 检查是否是从其他状态转换到自然回升
@@ -512,27 +583,29 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                 natural_rally_sell_ref_high = 0.0
                 enable_add_position = False  # 卖出后禁用分仓加仓
 
-        # 所有上升趋势的特殊卖出逻辑：在上升趋势中跟踪最高点，从高点回落THREE_POINTS_PCT时卖出
+        # 所有上升趋势的特殊卖出逻辑：在上升趋势中跟踪最高点，从高点回落THREE_POINTS时卖出
         if ENABLE_UPTREND_SELL and uptrend_sell_active and market_state == '上升趋势' and position > 0:
             # 更新该上升趋势的最高点
             if close_price > uptrend_sell_high:
                 uptrend_sell_high = close_price
             
-            # 检查当前上升趋势的最高点是否在上一轮高点的102%以内（包括未突破和突破2%以内）
+            # 检查当前上升趋势的最高点是否没有突破前高（即最高点 <= 上一轮高点）
             if uptrend_sell_ref_high > 0:
                 price_ratio = uptrend_sell_high / uptrend_sell_ref_high
-                if price_ratio <= (1 + UPTREND_BREAKOUT_THRESHOLD):  # 在上一轮高点的102%以内
-                    # 计算相对上一轮高点的变化幅度
-                    if price_ratio >= 1:
-                        breakout_pct = price_ratio - 1  # 突破幅度
-                        status_str = f"突破+{breakout_pct*100:.1f}%"
-                    else:
-                        below_pct = 1 - price_ratio  # 低于幅度
-                        status_str = f"低于前高-{below_pct*100:.1f}%"
+                if price_ratio <= 1:  # 没有突破前高（最高点 <= 上一轮高点）
+                    # 计算低于前高的幅度
+                    below_pct = 1 - price_ratio
+                    status_str = f"低于前高-{below_pct*100:.1f}%"
                     
-                    # 检查是否从该上升趋势的高点回落超过THREE_POINTS_PCT
+                    # 获取当前价格对应的THREE_POINTS阈值（固定数值：元）
+                    three_points_value = get_three_points_by_price(close_price)
+                    if three_points_value is None:
+                        three_points_value = 0.075  # 默认 fallback
+                    
+                    # 检查是否从该上升趋势的高点回落超过THREE_POINTS（转换为百分比）
                     drop_from_high_pct = (uptrend_sell_high - close_price) / uptrend_sell_high
-                    if drop_from_high_pct >= THREE_POINTS_PCT:  # 从高点回落超过THREE_POINTS_PCT才卖出
+                    three_points_pct = three_points_value / close_price  # 将固定数值转换为百分比
+                    if drop_from_high_pct >= three_points_pct:  # 从高点回落超过THREE_POINTS才卖出
                         sell_value = position * close_price
                         profit = sell_value - invested_capital
                         profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
@@ -558,7 +631,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         uptrend_sell_high = 0.0
                         uptrend_sell_ref_high = 0.0
 
-        # 所有自然回升的特殊卖出逻辑：在自然回升中跟踪最高点，从高点回落THREE_POINTS_PCT时卖出
+        # 所有自然回升的特殊卖出逻辑：在自然回升中跟踪最高点，从高点回落THREE_POINTS时卖出
         if ENABLE_NATURAL_RALLY_SELL and natural_rally_sell_active and market_state == '自然回升' and position > 0:
             # 更新该自然回升的最高点
             if close_price > natural_rally_sell_high:
@@ -576,9 +649,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         below_pct = 1 - price_ratio  # 低于幅度
                         status_str = f"低于前高-{below_pct*100:.1f}%"
                     
-                    # 检查是否从该自然回升的高点回落超过THREE_POINTS_PCT
+                    # 获取当前价格对应的THREE_POINTS阈值（固定数值：元）
+                    three_points_value = get_three_points_by_price(close_price)
+                    if three_points_value is None:
+                        three_points_value = 0.075  # 默认 fallback
+                    
+                    # 检查是否从该自然回升的高点回落超过THREE_POINTS（转换为百分比）
                     drop_from_high_pct = (natural_rally_sell_high - close_price) / natural_rally_sell_high
-                    if drop_from_high_pct >= THREE_POINTS_PCT:  # 从高点回落超过THREE_POINTS_PCT才卖出
+                    three_points_pct = three_points_value / close_price  # 将固定数值转换为百分比
+                    if drop_from_high_pct >= three_points_pct:  # 从高点回落超过THREE_POINTS才卖出
                         sell_value = position * close_price
                         profit = sell_value - invested_capital
                         profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
@@ -604,7 +683,22 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                         natural_rally_sell_high = 0.0
                         natural_rally_sell_ref_high = 0.0
 
-        # 所有下降趋势的特殊买入逻辑：在下降趋势中跟踪最低点，从低点上涨THREE_POINTS_PCT时进入待观察状态
+        # 自然回升中超过前低买入逻辑：下降趋势→自然回升因破前低跳过买入后，在自然回升中超过前低时买入
+        if ENABLE_NATURAL_RALLY_BREAKOUT_BUY and natural_rally_breakout_buy_active and market_state == '自然回升' and position == 0:
+            if natural_rally_breakout_ref_low > 0:
+                # 检查当前价格是否超过前低（加上阈值）
+                breakout_target = natural_rally_breakout_ref_low * (1 + NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD)
+                if close_price >= breakout_target:
+                    # 买入（启用分仓加仓模式）
+                    buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
+                    if buy_action:
+                        above_pct = (close_price - natural_rally_breakout_ref_low) / natural_rally_breakout_ref_low
+                        trade_action = f"{buy_action}(自然回升突破前低:{natural_rally_breakout_ref_low:.2f}→{close_price:.2f} +{above_pct*100:.1f}%)"
+                        natural_rally_breakout_buy_active = False
+                        natural_rally_breakout_ref_low = 0.0
+                        enable_add_position = True  # 启用分仓加仓
+
+        # 所有下降趋势的特殊买入逻辑：在下降趋势中跟踪最低点，从低点上涨THREE_POINTS时进入待观察状态
         if ENABLE_DOWNTREND_BUY and downtrend_buy_active and market_state == '下降趋势' and position == 0:
             # 更新该下降趋势的最低点
             if close_price < downtrend_buy_low:
@@ -617,9 +711,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     above_pct = (downtrend_buy_low - downtrend_buy_ref_low) / downtrend_buy_ref_low
                     status_str = f"未破前低+{above_pct*100:.1f}%"
                     
-                    # 检查是否从该下降趋势的低点上涨超过THREE_POINTS_PCT
+                    # 获取当前价格对应的THREE_POINTS阈值（固定数值：元）
+                    three_points_value = get_three_points_by_price(close_price)
+                    if three_points_value is None:
+                        three_points_value = 0.075  # 默认 fallback
+                    
+                    # 检查是否从该下降趋势的低点上涨超过THREE_POINTS（转换为百分比）
                     rise_from_low_pct = (close_price - downtrend_buy_low) / downtrend_buy_low
-                    if rise_from_low_pct >= THREE_POINTS_PCT:  # 从低点上涨超过THREE_POINTS_PCT才触发
+                    three_points_pct = three_points_value / close_price  # 将固定数值转换为百分比
+                    if rise_from_low_pct >= three_points_pct:  # 从低点上涨超过THREE_POINTS才触发
                         if ENABLE_DOWNTREND_BUY_DELAY:
                             # 进入延迟观察状态，等待价格超过触发点
                             if not downtrend_buy_pending:
@@ -664,12 +764,12 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             downtrend_buy_pending = False
             downtrend_buy_trigger_price = 0.0
 
-        # 所有自然回撤的特殊买入逻辑：在自然回撤中跟踪最低点，从低点上涨THREE_POINTS_PCT时买入
+        # 所有自然回撤的特殊买入逻辑：在自然回撤中跟踪最低点，从低点上涨THREE_POINTS时买入
         if ENABLE_NATURAL_REACTION_BUY and natural_reaction_buy_active and market_state == '自然回撤' and position == 0:
             # 更新该自然回撤的最低点
             if close_price < natural_reaction_buy_low:
                 natural_reaction_buy_low = close_price
-            
+
             # 检查当前自然回撤的最低点是否没有跌破上一轮低点（即当前低点 >= 前低 * 0.98）
             if natural_reaction_buy_ref_low > 0:
                 price_ratio = natural_reaction_buy_low / natural_reaction_buy_ref_low
@@ -681,10 +781,16 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     else:
                         below_pct = 1 - price_ratio  # 低于幅度
                         status_str = f"低于前低-{below_pct*100:.1f}%"
-                    
-                    # 检查是否从该自然回撤的低点上涨超过THREE_POINTS_PCT
+
+                    # 获取当前价格对应的THREE_POINTS阈值（固定数值：元）
+                    three_points_value = get_three_points_by_price(close_price)
+                    if three_points_value is None:
+                        three_points_value = 0.075  # 默认 fallback
+
+                    # 检查是否从该自然回撤的低点上涨超过THREE_POINTS（转换为百分比）
                     rise_from_low_pct = (close_price - natural_reaction_buy_low) / natural_reaction_buy_low
-                    if rise_from_low_pct >= THREE_POINTS_PCT:  # 从低点上涨超过THREE_POINTS_PCT才买入
+                    three_points_pct = three_points_value / close_price  # 将固定数值转换为百分比
+                    if rise_from_low_pct >= three_points_pct:  # 从低点上涨超过THREE_POINTS才买入
                         buy_action = execute_transition_buy(date_str, close_price, current_total_value, i)
                         if buy_action:
                             trade_action = f"{buy_action}(自然回撤结束:{status_str}后上涨{rise_from_low_pct*100:.1f}%)"
@@ -698,6 +804,11 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
             natural_reaction_buy_active = False
             natural_reaction_buy_low = 0.0
             natural_reaction_buy_ref_low = 0.0
+
+        # 离开自然回升时，清空自然回升突破前低买入跟踪
+        if market_state != '自然回升':
+            natural_rally_breakout_buy_active = False
+            natural_rally_breakout_ref_low = 0.0
 
         # 加仓逻辑：只有在启用分仓加仓模式时，价格每上涨ADD_POSITION_THRESHOLD买入下一仓
         # 在任意趋势（上升类型和下降类型）中都执行加仓
