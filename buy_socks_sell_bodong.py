@@ -1,4 +1,4 @@
-"""
+﻿"""
 六状态市场分析策略
 - 起始资金10万，分N仓（默认3仓）
 - 状态转换时买入/卖出
@@ -22,8 +22,8 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
-POSITION_COUNT = 3  # 分仓数量（默认4仓）
-ADD_POSITION_THRESHOLD = 0.01  # 加仓阈值，每上涨3%买入下一仓
+POSITION_COUNT = 3    # 分仓数量（默认4仓）
+ADD_POSITION_THRESHOLD = 0.07  # 加仓阈值，每上涨3%买入下一仓
 
 BREAKOUT_THRESHOLD = 0.02  # 突破阈值3%
 BUY_DELAY_RISE_PCT = 0.02  # 所有买点统一延迟买入阈值（相对状态切换点上涨3%）
@@ -31,7 +31,7 @@ ENABLE_DELAYED_BUY_MODE = True # 延迟买入开关：True=延迟观察买入，
 # 上升趋势→自然回撤跳过卖出开关
 # True: 启用跳过卖出逻辑（突破前高超过阈值时跳过卖出）
 # False: 禁用跳过卖出逻辑（总是卖出）
-ENABLE_SKIP_SELL_ON_BREAKOUT = False
+ENABLE_SKIP_SELL_ON_BREAKOUT = True
 
 
 # 趋势转换当天大涨直接买入配置
@@ -40,24 +40,24 @@ DIRECT_BUY_RISE_THRESHOLD = 0.07      # 趋势转换当天相比前一天涨幅�
 
 # 所有上升趋势的特殊卖出配置
 ENABLE_UPTREND_SELL = True  # 是否启用所有上升趋势的特殊卖出
-UPTREND_BREAKOUT_THRESHOLD = 0.02  # 突破上一轮高点的阈值（默认2%）
+UPTREND_BREAKOUT_THRESHOLD = 0.05  # 突破上一轮高点的阈值（默认2%）
 
 # 所有自然回升的特殊卖出配置
-ENABLE_NATURAL_RALLY_SELL = True  # 是否启用自然回升的特殊卖出
+ENABLE_NATURAL_RALLY_SELL = False  # 是否启用自然回升的特殊卖出
 NATURAL_RALLY_BREAKOUT_THRESHOLD = 0.02  # 突破前一轮自然回升高点的阈值（默认2%）
 
 # 自然回升中超过前低买入配置（下降趋势→自然回升因破前低跳过买入后，在自然回升中超过前低时买入）
 ENABLE_NATURAL_RALLY_BREAKOUT_BUY = True  # 是否启用自然回升中超过前低买入
-NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD = 0.02  # 超过前低的阈值（默认0%，即价格 >= 前低)
+NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD = 0.05  # 超过前低的阈值（默认0%，即价格 >= 前低)
 
 # 所有自然回撤的特殊买入配置
-ENABLE_NATURAL_REACTION_BUY = True  # 是否启用自然回撤的特殊买入
+ENABLE_NATURAL_REACTION_BUY = False  # 是否启用自然回撤的特殊买入
 NATURAL_REACTION_BREAKOUT_THRESHOLD = 0.02  # 相对前一轮自然回撤低点的阈值（默认2%，即当前低点 >= 前低 * 0.98)
 
 # 所有下降趋势的特殊买入配置
 ENABLE_DOWNTREND_BUY = True  # 是否启用所有下降趋势的特殊买入
 DOWNTREND_BREAKOUT_THRESHOLD = 0.02  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95)
-ENABLE_DOWNTREND_BUY_DELAY = False  # 下降趋势结束买入延迟观察开关
+ENABLE_DOWNTREND_BUY_DELAY = True  # 下降趋势结束买入延迟观察开关
 DOWNTREND_BUY_DELAY_PCT = 0.02  # 下降趋势结束延迟买入阈值（相对触发点上涨2%）
 
 # 状态转换阈值配置（固定数值：元，不再是百分比）
@@ -66,14 +66,16 @@ DOWNTREND_BUY_DELAY_PCT = 0.02  # 下降趋势结束延迟买入阈值（相对�
 # 5~15元：SIX_POINTS = 1.2元
 # 15~40元：SIX_POINTS = 3元
 # 40~80元：SIX_POINTS = 6元
-# 80~200元：SIX_POINTS = 12元
+# 80~200元：SIX_POINTS = 12元   ``
 SIX_POINTS_CONFIG = {
-    (5, 15): 1.2,      # 5~15元：1.2元
-    (15, 40): 3.0,     # 15~40元：3元
-    (40, 80): 6.0,     # 40~80元：6元
-    (80, 200): 12.0,   # 80~200元：12元
+    (1.5, 3): 0.3,      # 1.5~3元：0.3元
+    (3, 5): 0.6,      # 3~5元：0.6元
+    (5, 12): 1.3,      # 5~15元：1.2元
+    (12, 40): 2.4,     # 15~40元：3元
+    (40, 90): 6,     # 40~80元：6元
+    (90, 200): 12.0,   # 80~200元：12元
 }
-MIN_PRICE_TO_OPERATE = 5.0  # 最小操作股价（低于此价格不操作）
+MIN_PRICE_TO_OPERATE = 1.5  # 最小操作股价（低于此价格不操作）
 
 
 def get_six_points_by_price(price: float) -> float:
@@ -92,9 +94,9 @@ def get_six_points_by_price(price: float) -> float:
         if low <= price < high:
             return value
     
-    # 如果股价超过200元，使用最高档位
+    # 如果股价超过200元，使用最高档位12元
     if price >= 200:
-        return SIX_POINTS_CONFIG[(80, 200)]
+        return 12.0
     
     return None
 
@@ -142,8 +144,14 @@ def get_output_file_path(base_name="out_put.txt"):
                     raise Exception("无法找到可用的输出文件路径")
 
 
-def run_backtest(stock_code: str = STOCK_CODE):
-    """回测主函数"""
+def run_backtest(stock_code: str = STOCK_CODE, outbreak_sell_e_buyback_threshold: float = None, outbreak_position_buy_count: int = None):
+    """回测主函数
+    
+    Args:
+        stock_code: 股票代码
+        outbreak_sell_e_buyback_threshold: 卖出E后的买回阈值（本策略不使用，为兼容run_all_socks.py接口保留）
+        outbreak_position_buy_count: 分仓数量（本策略不使用，为兼容run_all_socks.py接口保留）
+    """
     
     # 获取日线数据
     df = get_daily_data(stock_code, days=365 * BACKTEST_YEARS + 400)
