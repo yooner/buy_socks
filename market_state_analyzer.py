@@ -1,4 +1,4 @@
-﻿"""
+"""
 市场六状态分析器
 基于利弗莫尔市场关键点理论
 
@@ -305,8 +305,7 @@ class MarketStateAnalyzer:
             
             # 计算转换信息（记录在当前天 - 状态转换的当天）
             price_change = price - prev_key_point
-            price_change_pct = (price_change / prev_key_point) * 100 if prev_key_point != 0 else 0
-            notes = f"从{prev_state.value}→{new_state.value} | 前段关键点:{prev_key_point:.2f}→{price:.2f} ({price_change:+.2f}, {price_change_pct:+.2f}%)"
+            notes = f"从{prev_state.value}→{new_state.value} | 前段关键点:{prev_key_point:.2f}→{price:.2f} ({price_change:+.2f}元)"
             
             # 下降趋势→自然回升：本轮下降趋势未跌破上一轮下降趋势低点时，才允许买入
             if prev_state == MarketState.DOWN_TREND and new_state == MarketState.NATURAL_RALLY:
@@ -345,10 +344,12 @@ class MarketStateAnalyzer:
         three_points = self._get_three_points(price)
         
         if self.current_state == MarketState.UP_TREND:
-            # 上升趋势 → 自然回撤: 最高点下降6个点(20%)
+            # 上升趋势 → 自然回撤: 当前段落最高点下降6个点(20%)
             # 注意：上升趋势只能转为自然回撤，不能直接转为次级回撤
-            if self.up_trend_high:
-                drop_pct = (self.up_trend_high - price) / self.up_trend_high
+            # 使用当前段落的关键点，而不是历史最高点
+            current_segment_high = self.current_segment.key_point if self.current_segment else self.up_trend_high
+            if current_segment_high:
+                drop_pct = (current_segment_high - price) / current_segment_high
                 if drop_pct >= six_points:
                     # 转为自然回撤
                     self.current_natural_reaction_low = price
@@ -356,9 +357,8 @@ class MarketStateAnalyzer:
                     if self.last_natural_reaction_low is None or price < self.last_natural_reaction_low:
                         self.natural_reaction_low = price
                     return MarketState.NATURAL_REACTION
-            # 更新上升趋势最高点
-            if price > self.up_trend_high:
-                self.up_trend_high = price
+            # 更新上升趋势最高点（当前段落关键点）
+            if price > current_segment_high:
                 self.current_segment.key_point = price
             return MarketState.UP_TREND
         
@@ -423,10 +423,12 @@ class MarketStateAnalyzer:
             return MarketState.NATURAL_REACTION
         
         elif self.current_state == MarketState.DOWN_TREND:
-            # 下降趋势 → 自然回升: 最低点上升6个点(20%)
+            # 下降趋势 → 自然回升: 当前段落最低点上升6个点(20%)
             # 注意：下降趋势只能转为自然回升，不能直接转为次级回升
-            if self.down_trend_low:
-                rise_pct = (price - self.down_trend_low) / self.down_trend_low
+            # 使用当前段落的关键点，而不是历史最低点
+            current_segment_low = self.current_segment.key_point if self.current_segment else self.down_trend_low
+            if current_segment_low:
+                rise_pct = (price - current_segment_low) / current_segment_low
                 if rise_pct >= six_points:
                     # 转为自然回升
                     self.current_natural_rally_high = price
@@ -435,9 +437,8 @@ class MarketStateAnalyzer:
                         self.natural_rally_high = price
                     return MarketState.NATURAL_RALLY
             
-            # 更新下降趋势最低点
-            if self.down_trend_low is None or price < self.down_trend_low:
-                self.down_trend_low = price
+            # 更新下降趋势最低点（当前段落关键点）
+            if current_segment_low is None or price < current_segment_low:
                 self.current_segment.key_point = price
             return MarketState.DOWN_TREND
         
