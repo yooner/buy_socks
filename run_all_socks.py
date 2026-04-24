@@ -528,6 +528,7 @@ def run_strategy(
 
     results = []
     holding_stocks = []  # 收集持仓股票信息
+    all_downtrend_to_rally_trades = []  # 收集所有股票的下降趋势→自然回升买入记录
 
     for i, stock_code in enumerate(stocks, 1):
         total_return, yearly_returns, extra_data = run_backtest_for_stock(
@@ -541,7 +542,7 @@ def run_strategy(
             continue
         
         # 每只股票回测后暂停0.5秒，降低CPU负载
-        time.sleep(0.3)
+        # time.sleep(0.3)
 
         result = {
             'stock_code': stock_code,
@@ -562,6 +563,12 @@ def run_strategy(
                 'start_date': holding_info.get('start_date', 'N/A'),
                 'holding_days': holding_info.get('holding_days', 0)
             })
+        
+        # 收集下降趋势→自然回升买入记录
+        if extra_data and 'downtrend_to_rally_trades' in extra_data and extra_data['downtrend_to_rally_trades']:
+            for trade in extra_data['downtrend_to_rally_trades']:
+                trade['stock_code'] = stock_code
+                all_downtrend_to_rally_trades.append(trade)
 
     if not results:
         print(f"\n没有有效的回测结果")
@@ -579,6 +586,23 @@ def run_strategy(
             print(f"{h['stock_code']:<12} {h['position']:>10} {h['cost_price']:>12.2f} {h['current_price']:>12.2f} {h['price_change_pct']:>+9.2f}% {start_date_str:>12} {h['holding_days']:>10}天")
         print(f"{'='*110}")
         print(f"总计: {len(holding_stocks)} 只股票处于持仓状态")
+    
+    # 打印所有股票的下降趋势→自然回升买入统计（仅对波动策略）
+    if strategy_key == 'bodong' and all_downtrend_to_rally_trades:
+        print(f"\n{'='*110}")
+        print("【所有股票下降趋势→自然回升买入统计】")
+        print(f"{'='*110}")
+        print(f"总买入次数: {len(all_downtrend_to_rally_trades)}")
+        total_profit = sum(t['profit'] for t in all_downtrend_to_rally_trades)
+        avg_profit_pct = sum(t['profit_pct'] for t in all_downtrend_to_rally_trades) / len(all_downtrend_to_rally_trades)
+        print(f"总盈亏: {total_profit:+.2f} 元")
+        print(f"平均收益率: {avg_profit_pct:+.2f}%")
+        print(f"\n详细记录:")
+        print(f"{'序号':<6} {'股票代码':<10} {'买入日期':<12} {'买入价格':>10} {'卖出日期':<12} {'卖出价格':>10} {'盈亏':>12} {'收益率':>10}")
+        print("-"*110)
+        for i, t in enumerate(all_downtrend_to_rally_trades, 1):
+            print(f"{i:<6} {t['stock_code']:<10} {t['buy_date']:<12} {t['buy_price']:>10.2f} {t['sell_date']:<12} {t['sell_price']:>10.2f} {t['profit']:>+12.2f} {t['profit_pct']:>+9.2f}%")
+        print(f"{'='*110}")
 
     if enable_git_tag:
         _, enable_update = check_and_create_git_tag(results, previous_df, strategy_key)

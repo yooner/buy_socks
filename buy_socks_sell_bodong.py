@@ -22,8 +22,8 @@ from market_state_analyzer import MarketStateAnalyzer, MarketState
 
 # ==================== 策略配置参数 ====================
 INITIAL_CAPITAL = 100000  # 起始资金
-POSITION_COUNT = 3    # 分仓数量（默认4仓）
-ADD_POSITION_THRESHOLD = 0.07  # 加仓阈值，每上涨3%买入下一仓
+POSITION_COUNT = 1    # 分仓数量（默认4仓）
+ADD_POSITION_THRESHOLD = 0.02  # 加仓阈值，每上涨3%买入下一仓
 
 BREAKOUT_THRESHOLD = 0.02  # 突破阈值3%
 BUY_DELAY_RISE_PCT = 0.02  # 所有买点统一延迟买入阈值（相对状态切换点上涨3%）
@@ -36,11 +36,11 @@ ENABLE_SKIP_SELL_ON_BREAKOUT = True
 
 # 趋势转换当天大涨直接买入配置
 ENABLE_DIRECT_BUY_ON_BIG_RISE = True  # 是否启用趋势转换当天大涨直接买入
-DIRECT_BUY_RISE_THRESHOLD = 0.07      # 趋势转换当天相比前一天涨幅阈值（默认7%）
+DIRECT_BUY_RISE_THRESHOLD = 0.05      # 趋势转换当天相比前一天涨幅阈值（默认7%）
 
 # 所有上升趋势的特殊卖出配置
 ENABLE_UPTREND_SELL = True  # 是否启用所有上升趋势的特殊卖出
-UPTREND_BREAKOUT_THRESHOLD = 0.05  # 突破上一轮高点的阈值（默认2%）
+UPTREND_BREAKOUT_THRESHOLD = 0.00  # 突破上一轮高点的阈值（默认2%）
 
 # 所有自然回升的特殊卖出配置
 ENABLE_NATURAL_RALLY_SELL = False  # 是否启用自然回升的特殊卖出
@@ -48,7 +48,7 @@ NATURAL_RALLY_BREAKOUT_THRESHOLD = 0.02  # 突破前一轮自然回升高点的�
 
 # 自然回升中超过前低买入配置（下降趋势→自然回升因破前低跳过买入后，在自然回升中超过前低时买入）
 ENABLE_NATURAL_RALLY_BREAKOUT_BUY = True  # 是否启用自然回升中超过前低买入
-NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD = 0.05  # 超过前低的阈值（默认0%，即价格 >= 前低)
+NATURAL_RALLY_BREAKOUT_BUY_THRESHOLD = 0.00  # 超过前低的阈值（默认0%，即价格 >= 前低)
 
 # 所有自然回撤的特殊买入配置
 ENABLE_NATURAL_REACTION_BUY = False  # 是否启用自然回撤的特殊买入
@@ -56,9 +56,13 @@ NATURAL_REACTION_BREAKOUT_THRESHOLD = 0.02  # 相对前一轮自然回撤低点�
 
 # 所有下降趋势的特殊买入配置
 ENABLE_DOWNTREND_BUY = True  # 是否启用所有下降趋势的特殊买入
-DOWNTREND_BREAKOUT_THRESHOLD = 0.02  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95)
+DOWNTREND_BREAKOUT_THRESHOLD = 0.00  # 相对上一轮低点的阈值（默认5%，即当前低点 >= 前低 * 0.95)
 ENABLE_DOWNTREND_BUY_DELAY = True  # 下降趋势结束买入延迟观察开关
-DOWNTREND_BUY_DELAY_PCT = 0.02  # 下降趋势结束延迟买入阈值（相对触发点上涨2%）
+DOWNTREND_BUY_DELAY_PCT = 0.00  # 下降趋势结束延迟买入阈值（相对触发点上涨2%）
+
+# 下降趋势→自然回升破前低买入后的止损配置
+ENABLE_DOWNTREND_RALLY_STOP_LOSS = False  # 是否启用跌破买入价止损机制
+DOWNTREND_RALLY_STOP_LOSS_PCT = 0.03  # 跌破买入价的止损阈值（默认3%，即价格 <= 买入价 * 0.97时卖出）
 
 # 状态转换阈值配置（固定数值：元，不再是百分比）
 # 根据股价区间设置6个点对应的固定数值（元），THREE_POINTS自动为SIX_POINTS的一半
@@ -326,6 +330,14 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     natural_reaction_buy_low = 0.0       # 该自然回撤的最低点
     natural_reaction_buy_ref_low = 0.0   # 上一轮自然回撤的低点
     
+    # 统计：下降趋势→自然回升买入记录
+    downtrend_to_rally_trades = []  # 记录每次买入和卖出的信息用于计算收益率
+    current_downtrend_to_rally_buy = None  # 当前正在跟踪的买入
+    
+    # 下降趋势→自然回升破前低买入后的跟踪（跌破买入价卖出，然后重新观察买入）
+    downtrend_rally_buy_price = 0.0      # 下降趋势→自然回升买入的价格
+    downtrend_rally_transition_price = 0.0  # 趋势转换日（自然回升开始日）的价格
+    
     # 分仓加仓控制：只有下降趋势提前结束和自然回撤结束才分仓，趋势转换一次性满仓
     enable_add_position = False  # 是否启用分仓加仓模式
 
@@ -405,23 +417,25 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     transition_name = pending_buy_signal['transition']
                     trade_action = f"{buy_action}(由待买触发:{transition_name} 基准{base_price:.2f} 目标{trigger_price:.2f})"
                     enable_add_position = False  # 趋势转换买入不启用分仓加仓
+                    # 记录下降趋势→自然回升买入
+                    if '下降趋势→自然回升' in transition_name:
+                        current_downtrend_to_rally_buy = {
+                            'buy_date': date_str,
+                            'buy_price': close_price,
+                            'buy_value': position * close_price if position > 0 else 0
+                        }
                 pending_buy_signal = None
 
         if is_start and prev_state is not None:
             # 买入条件判定
             can_buy_on_transition = True
+            is_down_to_rally_break_low = False  # 标记是否是下降趋势→自然回升破前低的情况
             if prev_state == '下降趋势' and market_state == '自然回升' and not allow_buy_down_to_rally:
-                can_buy_on_transition = False
+                # 破前低情况：不再跳过买入，而是直接买入并记录趋势转换日价格
+                is_down_to_rally_break_low = True
+                downtrend_rally_transition_price = close_price  # 记录趋势转换日价格
                 if trade_action == "":
-                    trade_action = "[跳过买入: 下行破前低]"
-                # 激活自然回升突破前低买入跟踪
-                if ENABLE_NATURAL_RALLY_BREAKOUT_BUY:
-                    natural_rally_breakout_buy_active = True
-                    # 记录前一轮下降趋势的低点（last_down_trend_low）
-                    if pd.notna(last_down_trend_low):
-                        natural_rally_breakout_ref_low = last_down_trend_low
-                    if trade_action == "[跳过买入: 下行破前低]":
-                        trade_action = f"[跳过买入: 下行破前低(前低{natural_rally_breakout_ref_low:.2f})]"
+                    trade_action = f"[下行破前低但超阈值:前低{last_down_trend_low:.2f}]" if pd.notna(last_down_trend_low) else "[下行破前低但超阈值]"
 
             # 买入逻辑：下降类型→上升类型，或上升类型→上升类型
             can_buy_transition_pair = (
@@ -452,6 +466,16 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     buy_action = execute_transition_buy(date_str, close_price, current_total_value, i, full_position=True)
                     if buy_action:
                         enable_add_position = False  # 趋势转换买入不启用分仓加仓
+                        # 记录下降趋势→自然回升买入
+                        if prev_state == '下降趋势' and market_state == '自然回升':
+                            current_downtrend_to_rally_buy = {
+                                'buy_date': date_str,
+                                'buy_price': close_price,
+                                'buy_value': position * close_price if position > 0 else 0
+                            }
+                            # 如果是破前低买入，记录买入价用于跌破检测
+                            if is_down_to_rally_break_low:
+                                downtrend_rally_buy_price = close_price
                         if is_big_rise:
                             if trade_action == "":
                                 trade_action = f"{buy_action}(状态切换大涨{day_rise_pct*100:.1f}%)"
@@ -554,6 +578,54 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     if pd.notna(ref_key_point):
                         natural_reaction_buy_ref_low = ref_key_point
 
+            # 下降趋势→自然回升破前低买入后：如果跌破买入价达到阈值，卖出并重新进入观察模式
+            if ENABLE_DOWNTREND_RALLY_STOP_LOSS and downtrend_rally_buy_price > 0 and position > 0:
+                stop_loss_price = downtrend_rally_buy_price * (1 - DOWNTREND_RALLY_STOP_LOSS_PCT)
+                if close_price <= stop_loss_price:
+                    sell_value = position * close_price
+                    profit = sell_value - invested_capital
+                    profit_pct = (profit / invested_capital) * 100 if invested_capital > 0 else 0
+                    cash += sell_value
+                    trade_action = f"[卖出全部:跌破买入价{downtrend_rally_buy_price:.2f}的{DOWNTREND_RALLY_STOP_LOSS_PCT*100:.0f}%({stop_loss_price:.2f})]"
+                    trades.append({
+                        'date': date_str,
+                        'action': '卖出',
+                        'price': close_price,
+                        'shares': position,
+                        'value': sell_value,
+                        'profit': profit,
+                        'profit_pct': profit_pct
+                    })
+                    # 记录下降趋势→自然回升买入的卖出信息
+                    if current_downtrend_to_rally_buy is not None:
+                        current_downtrend_to_rally_buy['sell_date'] = date_str
+                        current_downtrend_to_rally_buy['sell_price'] = close_price
+                        current_downtrend_to_rally_buy['sell_value'] = sell_value
+                        current_downtrend_to_rally_buy['profit'] = profit
+                        current_downtrend_to_rally_buy['profit_pct'] = profit_pct
+                        downtrend_to_rally_trades.append(current_downtrend_to_rally_buy)
+                        current_downtrend_to_rally_buy = None
+                    position = 0
+                    position_cost = 0
+                    position_count = 0
+                    last_buy_price = 0
+                    invested_capital = 0
+                    fixed_position_value = 0
+                    downtrend_rally_buy_price = 0.0  # 重置买入价跟踪
+                    # 重新进入观察模式，基准价为趋势转换日价格
+                    if downtrend_rally_transition_price > 0:
+                        pending_buy_signal = {
+                            'transition': '跌破买入价后重新观察',
+                            'observe_state': market_state,
+                            'base_price': downtrend_rally_transition_price,
+                            'start_date': date_str,
+                            'start_idx': i
+                        }
+                        target_price = downtrend_rally_transition_price * (1 + BUY_DELAY_RISE_PCT)
+                        trade_action += f" [重新观察:基准{downtrend_rally_transition_price:.2f} 目标{target_price:.2f}]"
+                    enable_add_position = False
+                    should_sell = False  # 已经处理过卖出，不再执行常规卖出逻辑
+
             if should_sell and position > 0:
                 sell_value = position * close_price
                 profit = sell_value - invested_capital
@@ -569,6 +641,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                     'profit': profit,
                     'profit_pct': profit_pct
                 })
+                # 记录下降趋势→自然回升买入的卖出信息
+                if current_downtrend_to_rally_buy is not None:
+                    current_downtrend_to_rally_buy['sell_date'] = date_str
+                    current_downtrend_to_rally_buy['sell_price'] = close_price
+                    current_downtrend_to_rally_buy['sell_value'] = sell_value
+                    current_downtrend_to_rally_buy['profit'] = profit
+                    current_downtrend_to_rally_buy['profit_pct'] = profit_pct
+                    downtrend_to_rally_trades.append(current_downtrend_to_rally_buy)
+                    current_downtrend_to_rally_buy = None
                 position = 0
                 position_cost = 0
                 position_count = 0
@@ -628,6 +709,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             'profit': profit,
                             'profit_pct': profit_pct
                         })
+                        # 记录下降趋势→自然回升买入的卖出信息
+                        if current_downtrend_to_rally_buy is not None:
+                            current_downtrend_to_rally_buy['sell_date'] = date_str
+                            current_downtrend_to_rally_buy['sell_price'] = close_price
+                            current_downtrend_to_rally_buy['sell_value'] = sell_value
+                            current_downtrend_to_rally_buy['profit'] = profit
+                            current_downtrend_to_rally_buy['profit_pct'] = profit_pct
+                            downtrend_to_rally_trades.append(current_downtrend_to_rally_buy)
+                            current_downtrend_to_rally_buy = None
                         position = 0
                         position_cost = 0
                         position_count = 0
@@ -680,6 +770,15 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
                             'profit': profit,
                             'profit_pct': profit_pct
                         })
+                        # 记录下降趋势→自然回升买入的卖出信息
+                        if current_downtrend_to_rally_buy is not None:
+                            current_downtrend_to_rally_buy['sell_date'] = date_str
+                            current_downtrend_to_rally_buy['sell_price'] = close_price
+                            current_downtrend_to_rally_buy['sell_value'] = sell_value
+                            current_downtrend_to_rally_buy['profit'] = profit
+                            current_downtrend_to_rally_buy['profit_pct'] = profit_pct
+                            downtrend_to_rally_trades.append(current_downtrend_to_rally_buy)
+                            current_downtrend_to_rally_buy = None
                         position = 0
                         position_cost = 0
                         position_count = 0
@@ -871,6 +970,18 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     log_print(f"总盈亏: {final_profit:,.2f} ({total_return:+.2f}%)")
     log_print(f"交易次数: {len(trades)}")
     
+    # 打印下降趋势→自然回升买入统计
+    if downtrend_to_rally_trades:
+        log_print(f"\n【下降趋势→自然回升买入统计】")
+        log_print(f"  买入次数: {len(downtrend_to_rally_trades)}")
+        total_profit = sum(t['profit'] for t in downtrend_to_rally_trades)
+        avg_profit_pct = sum(t['profit_pct'] for t in downtrend_to_rally_trades) / len(downtrend_to_rally_trades)
+        log_print(f"  总盈亏: {total_profit:+.2f} 元")
+        log_print(f"  平均收益率: {avg_profit_pct:+.2f}%")
+        log_print(f"  详细记录:")
+        for i, t in enumerate(downtrend_to_rally_trades, 1):
+            log_print(f"    [{i}] 买入: {t['buy_date']} @ {t['buy_price']:.2f} → 卖出: {t['sell_date']} @ {t['sell_price']:.2f} | 盈亏: {t['profit']:+.2f} ({t['profit_pct']:+.2f}%)")
+    
     # 打印交易记录
     if trades:
         log_print(f"\n【交易记录】")
@@ -891,7 +1002,7 @@ def _run_backtest_core(stock_code: str, df: pd.DataFrame):
     except Exception as e:
         print(f"\n[警告: 无法保存文件 - {e}]")
     
-    return total_return, {}, {'trades': trades, 'final_value': final_value, 'holding_info': None, 'state_segments': segments_df.to_dict('records')}
+    return total_return, {}, {'trades': trades, 'final_value': final_value, 'holding_info': None, 'state_segments': segments_df.to_dict('records'), 'downtrend_to_rally_trades': downtrend_to_rally_trades}
 
 
 if __name__ == "__main__":
