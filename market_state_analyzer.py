@@ -17,8 +17,41 @@
 
 from enum import Enum, auto
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Callable
 import pandas as pd
+
+# ==================== 状态转换阈值配置（固定数值：元，不再是百分比） ====================
+# 根据股价区间设置6个点对应的固定数值（元），THREE_POINTS自动为SIX_POINTS的一半
+SIX_POINTS_CONFIG = {
+    (1.5, 3): 0.3,      # 1.5~3元：0.3元
+    (3, 5): 0.6,        # 3~5元：0.6元
+    (5, 12): 1.3,       # 5~12元：1.3元
+    (12, 40): 2.4,      # 12~40元：2.4元
+    (40, 90): 6,        # 40~90元：6元
+    (90, 200): 10.0,    # 90~200元：10元
+    (200, 500): 13.0    # 200~500元：13元
+}
+MIN_PRICE_TO_OPERATE = 1.5  # 最小操作股价（低于此价格不操作）
+
+
+def get_six_points_by_price(price: float) -> float:
+    """根据股价获取对应的SIX_POINTS数值（元）"""
+    if price < MIN_PRICE_TO_OPERATE:
+        return None
+    for (low, high), value in SIX_POINTS_CONFIG.items():
+        if low <= price < high:
+            return value
+    if price >= 200:
+        return 12.0
+    return None
+
+
+def get_three_points_by_price(price: float) -> float:
+    """根据股价获取对应的THREE_POINTS数值（元）"""
+    six_points = get_six_points_by_price(price)
+    if six_points is None:
+        return None
+    return six_points / 2
 
 
 class MarketState(Enum):
@@ -59,6 +92,15 @@ class DailyState:
     notes: str = ""
     allow_buy_down_to_rally: bool = True  # 下降趋势→自然回升时是否允许买入
     last_down_trend_low: Optional[float] = None  # 上一次下降趋势的最低点（用于自然回升突破前低买入）
+    
+    # 新增：阶段结束标志相关字段
+    downtrend_end_flag_active: bool = False  # 下降阶段结束标志是否激活
+    downtrend_end_flag_low: Optional[float] = None  # 本轮下降趋势低点（用于下降结束标志）
+    downtrend_end_flag_triggered: bool = False  # 是否触发下降阶段结束标志
+    
+    uptrend_end_flag_active: bool = False  # 上升阶段结束标志是否激活
+    uptrend_end_flag_high: Optional[float] = None  # 本轮上升趋势高点（用于上升结束标志）
+    uptrend_end_flag_triggered: bool = False  # 是否触发上升阶段结束标志
 
 
 class MarketStateAnalyzer:
@@ -158,6 +200,17 @@ class MarketStateAnalyzer:
         # 记录上一次状态转换的参考价格（用于显示转换信息）
         self.last_transition_ref_price: Optional[float] = None
         
+        # 新增：阶段结束标志跟踪
+        # 下降阶段结束标志：未突破前低，从本轮低点反弹3点及以上
+        self.downtrend_end_flag_active: bool = False  # 是否激活下降阶段结束观察
+        self.downtrend_end_flag_low: Optional[float] = None  # 本轮下降趋势的低点
+        self.downtrend_end_flag_triggered: bool = False  # 是否触发下降阶段结束
+        
+        # 上升阶段结束标志：未突破前高，从本轮高点回落3点及以上
+        self.uptrend_end_flag_active: bool = False  # 是否激活上升阶段结束观察
+        self.uptrend_end_flag_high: Optional[float] = None  # 本轮上升趋势的高点
+        self.uptrend_end_flag_triggered: bool = False  # 是否触发上升阶段结束
+        
     def analyze(self, df: pd.DataFrame, price_col: str = '收盘', date_col: str = 'date') -> pd.DataFrame:
         """
         分析数据框，为每一天标注状态
@@ -196,6 +249,14 @@ class MarketStateAnalyzer:
         df['allow_buy_down_to_rally'] = [ds.allow_buy_down_to_rally for ds in self.daily_states]
         df['state_notes'] = [ds.notes for ds in self.daily_states]
         df['last_down_trend_low'] = [ds.last_down_trend_low for ds in self.daily_states]
+        
+        # 新增：阶段结束标志相关字段
+        df['downtrend_end_flag_active'] = [ds.downtrend_end_flag_active for ds in self.daily_states]
+        df['downtrend_end_flag_low'] = [ds.downtrend_end_flag_low for ds in self.daily_states]
+        df['downtrend_end_flag_triggered'] = [ds.downtrend_end_flag_triggered for ds in self.daily_states]
+        df['uptrend_end_flag_active'] = [ds.uptrend_end_flag_active for ds in self.daily_states]
+        df['uptrend_end_flag_high'] = [ds.uptrend_end_flag_high for ds in self.daily_states]
+        df['uptrend_end_flag_triggered'] = [ds.uptrend_end_flag_triggered for ds in self.daily_states]
         
         return df
     
@@ -322,6 +383,20 @@ class MarketStateAnalyzer:
         # 获取参考关键点
         ref_key_point = self._get_ref_key_point()
         
+        # 检测阶段结束标志（仅在非状态转换日）
+        if not is_start:
+            self._check_trend_end_flags(price, date_str)
+        else:
+            # 状态转换时重置标志
+            if self.current_state == MarketState.UP_TREND:
+                self.uptrend_end_flag_active = True
+                self.uptrend_end_flag_high = price
+                self.uptrend_end_flag_triggered = False
+            elif self.current_state == MarketState.DOWN_TREND:
+                self.downtrend_end_flag_active = True
+                self.downtrend_end_flag_low = price
+                self.downtrend_end_flag_triggered = False
+        
         daily = DailyState(
             idx=idx,
             date=date_str,
@@ -333,7 +408,13 @@ class MarketStateAnalyzer:
             ref_key_point=ref_key_point,
             notes=notes,
             allow_buy_down_to_rally=allow_buy_down_to_rally,
-            last_down_trend_low=self.last_down_trend_low
+            last_down_trend_low=self.last_down_trend_low,
+            downtrend_end_flag_active=self.downtrend_end_flag_active,
+            downtrend_end_flag_low=self.downtrend_end_flag_low,
+            downtrend_end_flag_triggered=self.downtrend_end_flag_triggered,
+            uptrend_end_flag_active=self.uptrend_end_flag_active,
+            uptrend_end_flag_high=self.uptrend_end_flag_high,
+            uptrend_end_flag_triggered=self.uptrend_end_flag_triggered
         )
         self.daily_states.append(daily)
     
@@ -649,6 +730,44 @@ class MarketStateAnalyzer:
             elif self.current_state == MarketState.SECONDARY_REACTION:
                 if self.secondary_reaction_low is None or price < self.secondary_reaction_low:
                     self.secondary_reaction_low = price
+    
+    def _check_trend_end_flags(self, price: float, date_str: str):
+        """检测阶段结束标志
+        
+        下降阶段结束标志：下降趋势未突破前低，从本轮下降趋势低点反弹3点及以上
+        上升阶段结束标志：上升趋势未突破前高，从本轮高点回落3点及以上
+        """
+        three_points = self._get_three_points(price)
+        
+        # 检测下降阶段结束标志（在下降趋势中）
+        if self.current_state == MarketState.DOWN_TREND and self.downtrend_end_flag_active:
+            # 更新本轮下降趋势的低点
+            if self.downtrend_end_flag_low is None or price < self.downtrend_end_flag_low:
+                self.downtrend_end_flag_low = price
+            
+            # 检查是否未突破前低（上一轮下降趋势的低点）
+            if self.last_down_trend_low is not None and self.downtrend_end_flag_low is not None:
+                # 未突破前低：本轮低点 >= 前低
+                if self.downtrend_end_flag_low >= self.last_down_trend_low:
+                    # 从本轮低点反弹3点及以上
+                    rebound = price - self.downtrend_end_flag_low
+                    if rebound >= three_points and not self.downtrend_end_flag_triggered:
+                        self.downtrend_end_flag_triggered = True
+        
+        # 检测上升阶段结束标志（在上升趋势中）
+        if self.current_state == MarketState.UP_TREND and self.uptrend_end_flag_active:
+            # 更新本轮上升趋势的高点
+            if self.uptrend_end_flag_high is None or price > self.uptrend_end_flag_high:
+                self.uptrend_end_flag_high = price
+            
+            # 检查是否未突破前高（上一轮上升趋势的高点）
+            if self.last_up_trend_high is not None and self.uptrend_end_flag_high is not None:
+                # 未突破前高：本轮高点 <= 前高
+                if self.uptrend_end_flag_high <= self.last_up_trend_high:
+                    # 从本轮高点回落3点及以上
+                    pullback = self.uptrend_end_flag_high - price
+                    if pullback >= three_points and not self.uptrend_end_flag_triggered:
+                        self.uptrend_end_flag_triggered = True
     
     def _get_ref_key_point(self) -> Optional[float]:
         """获取参考关键点
