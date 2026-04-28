@@ -438,6 +438,14 @@ class MarketStateAnalyzer:
                     if self.last_natural_reaction_low is None or price < self.last_natural_reaction_low:
                         self.natural_reaction_low = price
                     return MarketState.NATURAL_REACTION
+            
+            # 新增：如果触发了上升阶段结束标志，立即转为自然回撤
+            if self.uptrend_end_flag_triggered:
+                self.current_natural_reaction_low = price
+                if self.last_natural_reaction_low is None or price < self.last_natural_reaction_low:
+                    self.natural_reaction_low = price
+                return MarketState.NATURAL_REACTION
+            
             # 更新上升趋势最高点（当前段落关键点）
             if price > current_segment_high:
                 self.current_segment.key_point = price
@@ -517,6 +525,13 @@ class MarketStateAnalyzer:
                     if self.natural_rally_high is None or price > self.natural_rally_high:
                         self.natural_rally_high = price
                     return MarketState.NATURAL_RALLY
+            
+            # 新增：如果触发了下降阶段结束标志，立即转为自然回升
+            if self.downtrend_end_flag_triggered:
+                self.current_natural_rally_high = price
+                if self.natural_rally_high is None or price > self.natural_rally_high:
+                    self.natural_rally_high = price
+                return MarketState.NATURAL_RALLY
             
             # 更新下降趋势最低点（当前段落关键点）
             if current_segment_low is None or price < current_segment_low:
@@ -764,10 +779,14 @@ class MarketStateAnalyzer:
             if self.last_up_trend_high is not None and self.uptrend_end_flag_high is not None:
                 # 未突破前高：本轮高点 <= 前高
                 if self.uptrend_end_flag_high <= self.last_up_trend_high:
-                    # 从本轮高点回落3点及以上
-                    pullback = self.uptrend_end_flag_high - price
-                    if pullback >= three_points and not self.uptrend_end_flag_triggered:
-                        self.uptrend_end_flag_triggered = True
+                    # 新增条件：当前价格必须低于本轮上升趋势的起始价格
+                    # 这样才能确保是真正的"上升阶段结束"，而不是还没涨到前高
+                    uptrend_start_price = self.current_segment.start_price if self.current_segment else None
+                    if uptrend_start_price is not None and price < uptrend_start_price:
+                        # 从本轮高点回落3点及以上
+                        pullback = self.uptrend_end_flag_high - price
+                        if pullback >= three_points and not self.uptrend_end_flag_triggered:
+                            self.uptrend_end_flag_triggered = True
     
     def _get_ref_key_point(self) -> Optional[float]:
         """获取参考关键点
