@@ -1,4 +1,4 @@
-"""
+﻿"""
 波动率策略 - 基于波动率变化的交易策略（数据展示版，无交易逻辑）
 """
 
@@ -57,6 +57,9 @@ DIF_CONVERGENCE_DAYS = 3  # 连续N天向0靠近，默认3天
 
 # 买入规则2：下降阶段结束后，DIF连续M天变大
 DIF_INCREASE_AFTER_DOWNTREND_END_DAYS = 2  # 下降阶段结束后连续N天DIF变大，默认2天
+
+# 买入规则A：DIF上穿DEA后，MACD连续N天增长
+MACD_INCREASE_DAYS = 3  # MACD连续增长天数，默认3天
 
 # 卖出规则：DIF和MACD都从大变小
 # 通过比较当前值与前一天的值来判断是否变小
@@ -249,13 +252,91 @@ def check_dif_convergence_buy_signal(df: pd.DataFrame, current_idx: int, n_days:
     return convergence_count >= n_days
 
 
+def check_dif_cross_dea_observation_start(df: pd.DataFrame, current_idx: int) -> tuple:
+    """
+    检查是否首次出现DIF > DEA，开始观察期
+    
+    条件：
+    - 当天DIF > DEA
+    - 前一天DIF <= DEA（首次上穿）
+    
+    Args:
+        df: DataFrame包含DIF和DEA数据
+        current_idx: 当前索引
+        
+    Returns:
+        tuple: (是否开始观察期, 观察期起始索引)
+    """
+    if current_idx < 1:
+        return False, None
+    
+    current_dif = df.loc[current_idx, 'DIF']
+    current_dea = df.loc[current_idx, 'DEA']
+    prev_dif = df.loc[current_idx - 1, 'DIF']
+    prev_dea = df.loc[current_idx - 1, 'DEA']
+    
+    if pd.isna(current_dif) or pd.isna(current_dea) or pd.isna(prev_dif) or pd.isna(prev_dea):
+        return False, None
+    
+    # 首次DIF > DEA（当天上穿，前一天未上穿）
+    if current_dif > current_dea and prev_dif <= prev_dea:
+        return True, current_idx
+    
+    return False, None
+
+
+def check_macd_increasing_buy_signal(df: pd.DataFrame, current_idx: int, observation_start_idx: int, n_days: int = 3, max_observation_days: int = 10) -> bool:
+    """
+    在观察期内检查MACD连续N天增长
+    
+    条件：
+    - 在观察期内（从observation_start_idx开始）
+    - MACD连续N天增长（每天MACD > 前一天MACD）
+    
+    Args:
+        df: DataFrame包含MACD数据
+        current_idx: 当前索引
+        observation_start_idx: 观察期起始索引（DIF首次上穿DEA日）
+        n_days: 连续增长天数，默认3天
+        max_observation_days: 最大观察天数
+        
+    Returns:
+        bool: 是否触发买入信号
+    """
+    if observation_start_idx is None or current_idx <= observation_start_idx:
+        return False
+    
+    # 检查是否在观察期内
+    days_since_observation_start = current_idx - observation_start_idx
+    if days_since_observation_start > max_observation_days:
+        return False  # 观察期已过
+    
+    # 检查连续N天MACD增长
+    for j in range(n_days):
+        check_idx = current_idx - j
+        if check_idx < 1:
+            return False
+        
+        current_macd = df.loc[check_idx, 'MACD']
+        prev_macd = df.loc[check_idx - 1, 'MACD']
+        
+        if pd.isna(current_macd) or pd.isna(prev_macd):
+            return False
+        
+        # MACD必须增长（当前 > 前一天）
+        if current_macd <= prev_macd:
+            return False
+    
+    return True
+
+
 def check_macd_sell_signal(df: pd.DataFrame, current_idx: int) -> bool:
     """
     检查MACD卖出信号
     
     条件：
-    - DIF从大变小（当前DIF < 前一天DIF）
-    - MACD从大变小（当前MACD < 前一天MACD）
+    - MACD连续两天从高变低再变低
+    - 即：当前MACD < 前一天MACD，且前一天MACD < 前两天MACD
     
     Args:
         df: DataFrame包含DIF和MACD数据
@@ -264,22 +345,20 @@ def check_macd_sell_signal(df: pd.DataFrame, current_idx: int) -> bool:
     Returns:
         bool: 是否触发卖出信号
     """
-    if current_idx < 1:
+    if current_idx < 2:
         return False
     
-    current_dif = df.loc[current_idx, 'DIF']
-    prev_dif = df.loc[current_idx - 1, 'DIF']
     current_macd = df.loc[current_idx, 'MACD']
     prev_macd = df.loc[current_idx - 1, 'MACD']
+    prev2_macd = df.loc[current_idx - 2, 'MACD']
     
-    if pd.isna(current_dif) or pd.isna(prev_dif) or pd.isna(current_macd) or pd.isna(prev_macd):
+    if pd.isna(current_macd) or pd.isna(prev_macd) or pd.isna(prev2_macd):
         return False
     
-    # DIF和MACD都从大变小
-    dif_decreasing = current_dif < prev_dif
-    macd_decreasing = current_macd < prev_macd
+    # MACD连续两天下降：从高变低，再变低
+    macd_decreasing = (current_macd < prev_macd) and (prev_macd < prev2_macd)
     
-    return dif_decreasing and macd_decreasing
+    return macd_decreasing
 
 
 def check_dif_increase_after_downtrend_end(df: pd.DataFrame, current_idx: int, n_days: int = 2, max_observation_days: int = 10) -> tuple:
@@ -400,8 +479,13 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
     position = 0  # 持仓数量
     cash = 100000  # 初始资金
     buy_price = 0  # 买入价格
-    buy_type = None  # 买入类型：'A' = DIF向0靠近买入, 'B' = 下降阶段结束后买入
+    buy_type = None  # 买入类型：'A' = DIF上穿DEA后MACD变大买入, 'B' = 下降阶段结束后买入
     trades = []  # 交易记录
+    
+    # 初始化观察期状态（用于买入信号A：DIF上穿DEA后观察MACD）
+    observation_a_active = False  # 是否在观察期内
+    observation_a_start_idx = None  # 观察期起始索引
+    observation_a_buy_triggered = False  # 观察期内是否已触发买入
     
     # 初始化观察期状态（用于买入信号2）
     observation_active = False  # 是否在观察期内
@@ -433,27 +517,41 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         # 检查是否在下降趋势中（下降趋势不交易）
         is_downtrend = market_state == "下降趋势"
         
-        # 检查买入信号1：DIF连续N天向0靠近（下降趋势不买入，下行破前低不买入）
+        # 检查买入信号1和2
         buy_signal_1 = False
         buy_signal_2 = False
         
-        # 检查是否触发下降阶段结束标志，开始观察期
+        # 检查是否触发DIF上穿DEA，开始买入A的观察期
+        start_observation_a, obs_a_idx = check_dif_cross_dea_observation_start(df, i)
+        if start_observation_a:
+            observation_a_active = True
+            observation_a_start_idx = obs_a_idx
+            observation_a_buy_triggered = False
+        
+        # 检查买入A的观察期是否过期
+        if observation_a_active and observation_a_start_idx is not None:
+            days_in_observation_a = i - observation_a_start_idx
+            if days_in_observation_a > 10:  # 最大观察期10天
+                observation_a_active = False
+                observation_a_start_idx = None
+        
+        # 检查是否触发下降阶段结束标志，开始买入B的观察期
         signal_2_triggered, start_observation, obs_idx = check_dif_increase_after_downtrend_end(df, i)
         if start_observation:
             observation_active = True
             observation_start_idx = obs_idx
             observation_buy_triggered = False
         
-        # 检查观察期是否过期
+        # 检查买入B的观察期是否过期
         if observation_active and observation_start_idx is not None:
             days_in_observation = i - observation_start_idx
             if days_in_observation > 10:  # 最大观察期10天
                 observation_active = False
                 observation_start_idx = None
         
-        # 买入信号1：DIF连续向0靠近（需要不在下降趋势）
-        if position == 0 and not is_downtrend and allow_buy:
-            buy_signal_1 = check_dif_convergence_buy_signal(df, i, DIF_CONVERGENCE_DAYS)
+        # 买入信号1：DIF上穿DEA后，MACD连续N天增长（需要不在下降趋势）
+        if position == 0 and not is_downtrend and observation_a_active and not observation_a_buy_triggered and observation_a_start_idx is not None:
+            buy_signal_1 = check_macd_increasing_buy_signal(df, i, observation_a_start_idx, MACD_INCREASE_DAYS)
             if buy_signal_1:
                 # 执行买入A
                 buy_price = close_price
@@ -462,6 +560,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                     cash -= position * buy_price
                     buy_type = 'A'  # 标记为买入A
                     action = f"买入A@{buy_price:.2f}"
+                    observation_a_buy_triggered = True  # 标记观察期内已买入
                     trades.append({
                         'day': day_num,
                         'date': date_str,
