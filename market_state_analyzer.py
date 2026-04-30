@@ -101,6 +101,11 @@ class DailyState:
     uptrend_end_flag_active: bool = False  # 上升阶段结束标志是否激活
     uptrend_end_flag_high: Optional[float] = None  # 本轮上升趋势高点（用于上升结束标志）
     uptrend_end_flag_triggered: bool = False  # 是否触发上升阶段结束标志
+    
+    # 新增：DIF相关字段（用于上升阶段结束判定）
+    dif: Optional[float] = None  # 当前DIF值
+    dif_high: Optional[float] = None  # 上升趋势中DIF的最高值
+    dif_observing: bool = False  # 是否在观察DIF
 
 
 class MarketStateAnalyzer:
@@ -211,7 +216,7 @@ class MarketStateAnalyzer:
         self.uptrend_end_flag_high: Optional[float] = None  # 本轮上升趋势的高点
         self.uptrend_end_flag_triggered: bool = False  # 是否触发上升阶段结束
         
-    def analyze(self, df: pd.DataFrame, price_col: str = '收盘', date_col: str = 'date') -> pd.DataFrame:
+    def analyze(self, df: pd.DataFrame, price_col: str = '收盘', date_col: str = 'date', dif_col: str = 'DIF') -> pd.DataFrame:
         """
         分析数据框，为每一天标注状态
         
@@ -219,6 +224,7 @@ class MarketStateAnalyzer:
             df: 包含价格数据的DataFrame
             price_col: 价格列名
             date_col: 日期列名
+            dif_col: DIF列名（用于上升阶段结束判定）
             
         Returns:
             添加了状态列的DataFrame
@@ -226,13 +232,14 @@ class MarketStateAnalyzer:
         df = df.copy()
         prices = df[price_col].values
         dates = df[date_col].values
+        difs = df[dif_col].values if dif_col in df.columns else None
         
         # 初始化第一个状态
-        self._initialize_first_state(prices, dates)
+        self._initialize_first_state(prices, dates, difs[0] if difs is not None else None)
         
         # 遍历每一天进行状态判断
         for i in range(1, len(prices)):
-            self._process_day(i, dates[i], prices[i])
+            self._process_day(i, dates[i], prices[i], difs[i] if difs is not None else None)
         
         # 结束最后一个段落
         if self.current_segment:
@@ -260,7 +267,7 @@ class MarketStateAnalyzer:
         
         return df
     
-    def _initialize_first_state(self, prices: List[float], dates: List):
+    def _initialize_first_state(self, prices: List[float], dates: List, first_dif: Optional[float] = None):
         """初始化第一个状态"""
         # 初始状态设为上升趋势
         self.current_state = MarketState.UP_TREND
@@ -283,7 +290,10 @@ class MarketStateAnalyzer:
             state=MarketState.UP_TREND,
             is_segment_start=True,
             key_point=prices[0],
-            notes="初始状态"
+            notes="初始状态",
+            dif=first_dif,
+            dif_high=first_dif,
+            dif_observing=True if first_dif is not None else False
         )
         self.daily_states.append(daily)
         
@@ -292,10 +302,13 @@ class MarketStateAnalyzer:
         self.current_natural_rally_high = None
         self.current_natural_reaction_low = None
         self.secondary_rally_high = None
-    def _process_day(self, idx: int, date, price: float):
+    def _process_day(self, idx: int, date, price: float, dif: Optional[float] = None):
         """处理每一天的状态转换"""
         date_str = str(date)[:10]
         prev_price = self.daily_states[-1].price
+        prev_dif = self.daily_states[-1].dif
+        prev_dif_high = self.daily_states[-1].dif_high
+        prev_dif_observing = self.daily_states[-1].dif_observing
         
         # 根据当前状态判断转换
         new_state = self._determine_state(price, prev_price, date_str)
@@ -383,15 +396,28 @@ class MarketStateAnalyzer:
         # 获取参考关键点
         ref_key_point = self._get_ref_key_point()
         
+        # 计算当前DIF相关值
+        current_dif = dif
+        current_dif_high = prev_dif_high
+        current_dif_observing = prev_dif_observing
+        
+        # 在上升趋势中更新DIF最高值
+        if self.current_state == MarketState.UP_TREND and current_dif is not None:
+            if current_dif_high is None or current_dif > current_dif_high:
+                current_dif_high = current_dif
+        
         # 检测阶段结束标志（仅在非状态转换日）
         if not is_start:
-            self._check_trend_end_flags(price, date_str)
+            self._check_trend_end_flags(price, date_str, current_dif, current_dif_high)
         else:
             # 状态转换时重置标志
             if self.current_state == MarketState.UP_TREND:
                 self.uptrend_end_flag_active = True
                 self.uptrend_end_flag_high = price
                 self.uptrend_end_flag_triggered = False
+                # 进入上升趋势时重置DIF观察
+                current_dif_high = current_dif
+                current_dif_observing = True if current_dif is not None else False
             elif self.current_state == MarketState.DOWN_TREND:
                 self.downtrend_end_flag_active = True
                 self.downtrend_end_flag_low = price
@@ -414,7 +440,10 @@ class MarketStateAnalyzer:
             downtrend_end_flag_triggered=self.downtrend_end_flag_triggered,
             uptrend_end_flag_active=self.uptrend_end_flag_active,
             uptrend_end_flag_high=self.uptrend_end_flag_high,
-            uptrend_end_flag_triggered=self.uptrend_end_flag_triggered
+            uptrend_end_flag_triggered=self.uptrend_end_flag_triggered,
+            dif=current_dif,
+            dif_high=current_dif_high,
+            dif_observing=current_dif_observing
         )
         self.daily_states.append(daily)
     
@@ -722,13 +751,18 @@ class MarketStateAnalyzer:
                 if self.secondary_reaction_low is None or price < self.secondary_reaction_low:
                     self.secondary_reaction_low = price
     
-    def _check_trend_end_flags(self, price: float, date_str: str):
+    def _check_trend_end_flags(self, price: float, date_str: str, dif: Optional[float] = None, dif_high: Optional[float] = None):
         """检测阶段结束标志
         
         下降阶段结束标志：下降趋势未突破前低，从本轮下降趋势低点反弹3点及以上
         上升阶段结束标志：上升趋势未突破前高，从本轮高点回落3点及以上
+        
+        新增：DIF条件判断
+        - 如果DIF为正且没有从高变低下降超过阈值(0.03)，则不认定上升阶段结束
+        - 继续观察，直到DIF条件不满足或价格继续回落
         """
         three_points = self._get_three_points(price)
+        DIF_DROP_THRESHOLD = 0.05  # DIF从高变低的下降阈值
         
         # 检测下降阶段结束标志（在下降趋势中）
         if self.current_state == MarketState.DOWN_TREND and self.downtrend_end_flag_active:
@@ -740,9 +774,9 @@ class MarketStateAnalyzer:
             if self.last_down_trend_low is not None and self.downtrend_end_flag_low is not None:
                 # 未突破前低：本轮低点 >= 前低
                 if self.downtrend_end_flag_low >= self.last_down_trend_low:
-                    # 从本轮低点反弹3点及以上
-                    rebound = price - self.downtrend_end_flag_low
-                    if rebound >= three_points and not self.downtrend_end_flag_triggered:
+                    # 从本轮低点反弹3点及以上（转换为百分比比较）
+                    rebound_pct = (price - self.downtrend_end_flag_low) / self.downtrend_end_flag_low
+                    if rebound_pct >= three_points and not self.downtrend_end_flag_triggered:
                         self.downtrend_end_flag_triggered = True
         
         # 检测上升阶段结束标志（在上升趋势中）
@@ -759,10 +793,21 @@ class MarketStateAnalyzer:
                     # 这样才能确保是真正的"上升阶段结束"，而不是还没涨到前高
                     uptrend_start_price = self.current_segment.start_price if self.current_segment else None
                     if uptrend_start_price is not None and price < uptrend_start_price:
-                        # 从本轮高点回落3点及以上
-                        pullback = self.uptrend_end_flag_high - price
-                        if pullback >= three_points and not self.uptrend_end_flag_triggered:
-                            self.uptrend_end_flag_triggered = True
+                        # 从本轮高点回落3点及以上（转换为百分比比较）
+                        pullback_pct = (self.uptrend_end_flag_high - price) / self.uptrend_end_flag_high
+                        if pullback_pct >= three_points and not self.uptrend_end_flag_triggered:
+                            # 新增：DIF条件判断
+                            # 如果DIF为正且没有从高变低下降超过阈值，则不认定上升阶段结束
+                            if dif is not None and dif_high is not None:
+                                if dif > 0 and (dif_high - dif) < DIF_DROP_THRESHOLD:
+                                    # DIF条件满足，不触发上升阶段结束，继续观察
+                                    pass  # 不设置 triggered = True
+                                else:
+                                    # DIF条件不满足，触发上升阶段结束
+                                    self.uptrend_end_flag_triggered = True
+                            else:
+                                # 没有DIF数据，按原有逻辑触发
+                                self.uptrend_end_flag_triggered = True
     
     def _get_ref_key_point(self) -> Optional[float]:
         """获取参考关键点

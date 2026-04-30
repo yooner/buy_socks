@@ -171,20 +171,14 @@ def prepare_stock_data(df: pd.DataFrame) -> pd.DataFrame:
                 transition_info = state_notes
             
             # 检查阶段结束标志
-            # 上升阶段结束标志
+            # 上升阶段结束标志（DIF判断已内化到market_state_analyzer中）
             prev_uptrend_end = df.loc[i-1, 'uptrend_end_flag_triggered'] if 'uptrend_end_flag_triggered' in df.columns else False
             curr_uptrend_end = df.loc[i, 'uptrend_end_flag_triggered'] if 'uptrend_end_flag_triggered' in df.columns else False
-            # 特例：如果DIF > 1，不标记上升阶段结束
-            current_dif = df.loc[i, 'DIF'] if 'DIF' in df.columns else None
             if not prev_uptrend_end and curr_uptrend_end:
-                if pd.notna(current_dif) and current_dif > 1:
-                    # DIF > 1，不标记上升阶段结束
-                    pass
+                if transition_info:
+                    transition_info += " | 上升阶段结束"
                 else:
-                    if transition_info:
-                        transition_info += " | 上升阶段结束"
-                    else:
-                        transition_info = "上升阶段结束"
+                    transition_info = "上升阶段结束"
             
             # 下降阶段结束标志
             prev_downtrend_end = df.loc[i-1, 'downtrend_end_flag_triggered'] if 'downtrend_end_flag_triggered' in df.columns else False
@@ -274,6 +268,14 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
     observing_recovery_buy = False  # 是否在观察上升阶段恢复买入时机
     recovery_buy_trigger_price = 0  # 恢复买入的触发价格（达到3个点时的价格）
     
+    # 新增：下降趋势→自然回升的DIF/MACD观察变量
+    DIF_MACD_GROWTH_DAYS = 3  # DIF与MACD连续向上增长的天数（可配置）
+    DIF_MACD_GROWTH_THRESHOLD = 0.20  # 增长幅度阈值
+    observing_dif_macd_growth = False  # 是否在观察DIF与MACD连续增长
+    dif_macd_growth_start_day = 0  # 观察开始的天数索引
+    dif_macd_growth_first_dif = 0  # 第一天的DIF值
+    dif_macd_growth_first_macd = 0  # 第一天的MACD值
+    natural_rally_buy_triggered = False  # 自然回升买入是否已触发（买入后不再止损）
     
     header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'ATR'+str(ATR_PERIOD):>8} {'波动率':>8} {'DIF':>8} {'DEA':>8} {'MACD':>8} {'市场状态':>10} {'持仓':>6} {'操作':>20}"
     log_print(header)
@@ -304,6 +306,15 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         curr_is_falling = market_state in falling_trends
         prev_is_rising = prev_market_state in rising_trends if prev_market_state else False
         prev_is_falling = prev_market_state in falling_trends if prev_market_state else False
+        
+        # 在下降趋势或自然回撤中，观察DIF与MACD连续增长，满足条件直接买入
+        if position == 0 and market_state in ['下降趋势', '自然回撤'] and not observing_dif_macd_growth:
+            # 开始观察DIF与MACD连续增长
+            observing_dif_macd_growth = True
+            dif_macd_growth_start_day = i
+            dif_macd_growth_first_dif = dif if pd.notna(dif) else 0
+            dif_macd_growth_first_macd = macd if pd.notna(macd) else 0
+            action = "观察DIF/MACD增长"
         
         # 买入逻辑：从下降类型转为上升类型，或从上升类型转为上升类型时买入，且MACD>0
         if position == 0:
@@ -341,6 +352,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                             'quantity': position
                         })
                         observing_macd_positive = False  # 重置观察状态
+                        observing_dif_macd_growth = False  # 重置DIF/MACD观察状态
                 
                 # 情况2：从下降类型转为上升类型，且MACD<=0，开始观察
                 elif is_falling_to_rising and pd.notna(current_macd) and current_macd <= 0:
@@ -367,6 +379,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                                 'quantity': position
                             })
                         observing_macd_positive = False  # 重置观察状态
+                        observing_dif_macd_growth = False  # 重置DIF/MACD观察状态
                     # 如果状态又变回下降类型，取消观察
                     elif curr_is_falling:
                         observing_macd_positive = False
@@ -397,6 +410,55 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                     observing_natural_reaction_to_uptrend = False  # 重置观察状态
                     natural_reaction_trigger_price = 0
             
+            # 情况5：正在观察下降趋势或自然回撤中的DIF/MACD连续增长
+            elif observing_dif_macd_growth:
+                # 如果转为上升趋势或自然回升，取消观察（按相应逻辑处理）
+                if market_state in ['上升趋势', '自然回升']:
+                    observing_dif_macd_growth = False
+                else:
+                    # 检查是否满足连续增长条件
+                    days_elapsed = i - dif_macd_growth_start_day + 1
+                    
+                    # 检查DIF和MACD是否都向上增长（与前一天比较）
+                    current_dif = dif
+                    current_macd = df.loc[i, 'MACD']
+                    prev_dif = df.loc[i-1, 'DIF'] if i > 0 else None
+                    prev_macd = df.loc[i-1, 'MACD'] if i > 0 else None
+                    
+                    # 检查今天是否继续增长
+                    dif_growing = pd.notna(current_dif) and pd.notna(prev_dif) and current_dif > prev_dif
+                    macd_growing = pd.notna(current_macd) and pd.notna(prev_macd) and current_macd > prev_macd
+                    
+                    if days_elapsed >= DIF_MACD_GROWTH_DAYS:
+                        # 检查总增长幅度（从第一天到现在）
+                        dif_growth = current_dif - dif_macd_growth_first_dif
+                        macd_growth = current_macd - dif_macd_growth_first_macd
+                        
+                        if dif_growth >= DIF_MACD_GROWTH_THRESHOLD and macd_growth >= DIF_MACD_GROWTH_THRESHOLD:
+                            # 满足条件，执行买入
+                            buy_price = close_price
+                            position = int(cash / buy_price / 100) * 100  # 整手买入
+                            if position > 0:
+                                cash -= position * buy_price
+                                action = f"下降趋势买入@{buy_price:.2f}(DIF/MACD增长)"
+                                trades.append({
+                                    'day': day_num,
+                                    'date': date_str,
+                                    'action': '买入',
+                                    'price': buy_price,
+                                    'quantity': position
+                                })
+                                natural_rally_buy_triggered = True  # 标记已触发买入（用于自然回升/自然回撤不止损）
+                            observing_dif_macd_growth = False  # 重置观察状态
+                        else:
+                            action = f"DIF/MACD观察中(幅度{dif_growth:.2f}/{macd_growth:.2f})"
+                    else:
+                        # 天数不足，继续观察
+                        if dif_growing and macd_growing:
+                            action = f"DIF/MACD增长中({days_elapsed}/{DIF_MACD_GROWTH_DAYS}天)"
+                        else:
+                            action = f"DIF/MACD观察中({days_elapsed}/{DIF_MACD_GROWTH_DAYS}天)"
+            
         
         # 卖出逻辑：
         # 1. 从上升类型转为下降类型时卖出
@@ -404,7 +466,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         # 3. 在上升趋势中，MACD变成负的卖出
         # 4. 上升阶段结束减仓逻辑
         
-        # 检查是否触发上升阶段结束标志
+        # 检查是否触发上升阶段结束标志（DIF判断已内化到market_state_analyzer中）
         is_uptrend_end = '上升阶段结束' in state_transition if state_transition else False
         
         if position > 0:
@@ -412,8 +474,9 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
             reduce_position = False  # 是否减仓
             reduce_30_percent = False  # 是否减仓30%（特殊情况）
             
-            # 情况0：上升趋势→自然回撤且DIF > 1，减仓30%
-            if prev_market_state == '上升趋势' and market_state == '自然回撤':
+            # 情况0：上升趋势→自然回撤且DIF > 1，减仓30%，允许恢复买入
+            # 例外：如果是DIF/MACD机制买入的持仓，不执行此减仓逻辑
+            if prev_market_state == '上升趋势' and market_state == '自然回撤' and not natural_rally_buy_triggered:
                 current_dif = df.loc[i, 'DIF']
                 if pd.notna(current_dif) and current_dif > 1:
                     reduce_30_percent = True
@@ -421,12 +484,14 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                     uptrend_recovery_active = True  # 开始观察上升阶段恢复
             
             # 情况1：遇到上升阶段结束标志，开始减仓模式，第一次减仓50%，记录结束价格
+            # 注意：真正的上升阶段结束后，不允许恢复买入
             if is_uptrend_end and not reduce_position_active:
                 reduce_position = True
                 reduce_position_active = True
                 last_reduce_position_price = close_price
                 uptrend_end_price = close_price  # 记录上升阶段结束时的价格
-                uptrend_recovery_active = True  # 开始观察上升阶段恢复
+                # 真正的上升阶段结束，禁止恢复买入
+                uptrend_recovery_active = False
             
             # 情况2：已经处于减仓模式，如果价格超过上次减仓价格，继续减仓
             elif reduce_position_active and close_price > last_reduce_position_price:
@@ -494,30 +559,34 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                         buy_price = 0
             
             # 条件1：从上升类型转为下降类型，或从自然回撤转为下降趋势
-            # 特例：如果DIF > 1，从上升趋势→自然回撤不卖出
+            # 从上升趋势→自然回撤，DIF>1时也需要卖出
             if prev_is_rising and curr_is_falling:
-                current_dif = df.loc[i, 'DIF']
-                if prev_market_state == '上升趋势' and market_state == '自然回撤' and pd.notna(current_dif) and current_dif > 1:
-                    pass  # DIF > 1，上升趋势→自然回撤不卖出
-                else:
-                    sell_signal = True
+                sell_signal = True
             # 自然回撤→下降趋势也应该卖出
             elif prev_market_state == '自然回撤' and market_state == '下降趋势':
                 sell_signal = True
             
             # 条件2：在自然回升或次级回升中，MACD从大变小
-            # 特例：如果DIF > 1，自然回升中不卖出
+            # 特例1：如果DIF > 1，自然回升中不卖出
+            # 特例2：如果是DIF/MACD机制买入的持仓，自然回升/自然回撤中不止损
             if market_state in ['自然回升', '次级回升']:
                 current_macd = df.loc[i, 'MACD']
                 current_dif = df.loc[i, 'DIF']
+                # 特殊逻辑：如果是DIF/MACD机制买入的持仓，在自然回升中不卖出
+                if market_state == '自然回升' and natural_rally_buy_triggered:
+                    pass  # DIF/MACD机制买入的持仓，在自然回升中不止损
                 # 自然回升特殊逻辑：如果DIF > 1，不卖出
-                if market_state == '自然回升' and pd.notna(current_dif) and current_dif > 1:
+                elif market_state == '自然回升' and pd.notna(current_dif) and current_dif > 1:
                     pass  # DIF > 1，自然回升不卖出
                 # 自然回升特殊逻辑：如果MACD大于保护阈值，即使变低也不卖出
                 elif market_state == '自然回升' and pd.notna(current_macd) and current_macd >= NATURAL_RALLY_MACD_PROTECT_THRESHOLD:
                     pass  # MACD高值保护，不卖出
                 elif check_macd_sell_signal(df, i, MACD_SELL_THRESHOLD):
                     sell_signal = True
+            
+            # 条件2b：在自然回撤中，如果是DIF/MACD机制买入的持仓，不止损
+            if market_state == '自然回撤' and natural_rally_buy_triggered:
+                pass  # DIF/MACD机制买入的持仓，在自然回撤中不止损
             
             # 条件3：在上升趋势中，MACD < -0.15 时卖出
             # 特例：如果DIF > 1，MACD为负时不卖出（不止损）
@@ -559,6 +628,13 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                 uptrend_end_price = 0
                 # 重置恢复买入标志
                 is_recovery_buy = False
+                # 重置自然回升买入标志
+                natural_rally_buy_triggered = False
+                # 重置DIF/MACD观察状态
+                observing_dif_macd_growth = False
+                dif_macd_growth_start_day = 0
+                dif_macd_growth_first_dif = 0
+                dif_macd_growth_first_macd = 0
         
         # 情况4：上升阶段恢复买入（独立逻辑，不受position==0限制，可作为加仓逻辑）
         # 条件：在上升趋势中，处于恢复观察状态，价格从上升阶段结束时的价格上升3个点（固定数值）以上
@@ -608,6 +684,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                     # 重置观察状态
                     observing_recovery_buy = False
                     recovery_buy_trigger_price = 0
+                    observing_dif_macd_growth = False  # 重置DIF/MACD观察状态
         
         # 格式化输出
         line = f"{day_num:<5} {date_str:<10} {close_price:>8.2f}"
@@ -676,8 +753,13 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
                 log_print(f"  买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
             elif trade['action'] == '上升阶段恢复买入':
                 log_print(f"  上升阶段恢复买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
+            elif trade['action'] == '自然回升买入':
+                log_print(f"  自然回升买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
             elif trade['action'] == '买回':
                 log_print(f"  买回: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
+            elif trade['action'] == '减仓30%':
+                # 不打印减仓30%的记录（该逻辑已不再使用）
+                pass
             elif trade['action'] == '减仓50%':
                 log_print(f"  减仓50%: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股 盈亏:{trade['profit']:+.0f}({trade['profit_pct']:+.2f}%)")
             elif trade['action'] == '减仓清仓':
