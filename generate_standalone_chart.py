@@ -8,6 +8,7 @@ import sys
 def parse_output_file(filepath):
     dates = []
     prices = []
+    macd_values = []
     buy_points = []
     sell_points = []
     
@@ -27,8 +28,16 @@ def parse_output_file(filepath):
             date_str = parts[1]
             close_price = float(parts[2])
             
+            # MACD 在第8列 (parts[7])
+            macd_raw = parts[7]
+            if macd_raw == 'N/A':
+                macd_val = None
+            else:
+                macd_val = float(macd_raw)
+            
             dates.append(date_str)
             prices.append(close_price)
+            macd_values.append(macd_val)
             
             if '买入@' in line:
                 match = re.search(r'买入@([\d.]+)\(([^)]+)\)', line)
@@ -51,9 +60,9 @@ def parse_output_file(filepath):
         except:
             continue
     
-    return dates, prices, buy_points, sell_points
+    return dates, prices, macd_values, buy_points, sell_points
 
-def generate_standalone_html(dates, prices, buy_points, sell_points, output_path):
+def generate_standalone_html(dates, prices, macd_values, buy_points, sell_points, output_path):
     # 读取echarts库文件
     try:
         with open('echarts.min.js', 'r', encoding='utf-8') as f:
@@ -66,6 +75,7 @@ def generate_standalone_html(dates, prices, buy_points, sell_points, output_path
     sell_data_json = json.dumps(sell_points, ensure_ascii=False)
     dates_json = json.dumps(dates, ensure_ascii=False)
     prices_json = json.dumps(prices, ensure_ascii=False)
+    macd_json = json.dumps(macd_values, ensure_ascii=False)
     
     # 如果echarts代码存在，内嵌它；否则使用CDN
     if echarts_code:
@@ -83,25 +93,30 @@ def generate_standalone_html(dates, prices, buy_points, sell_points, output_path
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: 'Microsoft YaHei', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
         .container {{ max-width: 1400px; margin: 0 auto; background: white; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }}
-        .header h1 {{ font-size: 28px; margin-bottom: 10px; }}
-        .stats {{ display: flex; justify-content: center; gap: 40px; margin-top: 20px; flex-wrap: wrap; }}
+        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 20px; text-align: center; display: flex; align-items: center; justify-content: space-between; }}
+        .header-left {{ text-align: left; }}
+        .header h1 {{ font-size: 18px; margin-bottom: 2px; }}
+        .header p {{ font-size: 12px; opacity: 0.9; margin: 0; }}
+        .stats {{ display: flex; gap: 24px; flex-wrap: wrap; }}
         .stat-item {{ text-align: center; }}
-        .stat-value {{ font-size: 24px; font-weight: bold; }}
-        .stat-label {{ font-size: 12px; opacity: 0.8; }}
-        .legend {{ display: flex; justify-content: center; gap: 40px; padding: 20px; background: #f8f9fa; border-bottom: 1px solid #e9ecef; }}
+        .stat-value {{ font-size: 16px; font-weight: bold; }}
+        .stat-label {{ font-size: 11px; opacity: 0.8; }}
+        .legend {{ display: flex; justify-content: center; gap: 40px; padding: 8px; background: #f8f9fa; border-bottom: 1px solid #e9ecef; }}
         .legend-item {{ display: flex; align-items: center; gap: 8px; font-size: 14px; color: #495057; }}
         .legend-dot {{ width: 14px; height: 14px; border-radius: 50%; }}
         .buy-dot {{ background: #ff4757; box-shadow: 0 0 10px rgba(255,71,87,0.5); }}
         .sell-dot {{ background: #2ed573; box-shadow: 0 0 10px rgba(46,213,115,0.5); }}
-        #chart {{ width: 100%; height: 600px; padding: 20px; }}
+        #chart {{ width: 100%; height: 600px; padding: 10px; }}
+        #macd-chart {{ width: 100%; height: 250px; padding: 10px; }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>股票交易走势图 - 603083</h1>
-            <p>回测区间: 2020-2026</p>
+            <div class="header-left">
+                <h1>股票交易走势图 - 603083</h1>
+                <p>回测区间: 2020-2026</p>
+            </div>
             <div class="stats">
                 <div class="stat-item"><div class="stat-value">{len(dates)}</div><div class="stat-label">交易日</div></div>
                 <div class="stat-item"><div class="stat-value">{len(buy_points)}</div><div class="stat-label">买入次数</div></div>
@@ -114,10 +129,12 @@ def generate_standalone_html(dates, prices, buy_points, sell_points, output_path
             <div class="legend-item"><div class="legend-dot sell-dot"></div><span>卖出点 (绿色)</span></div>
         </div>
         <div id="chart"></div>
+        <div id="macd-chart"></div>
     </div>
     <script>
         const dates = {dates_json};
         const prices = {prices_json};
+        const macdData = {macd_json};
         const buyPoints = {buy_data_json};
         const sellPoints = {sell_data_json};
         
@@ -165,7 +182,39 @@ def generate_standalone_html(dates, prices, buy_points, sell_points, output_path
             }}]
         }};
         chart.setOption(option);
-        window.addEventListener('resize', () => chart.resize());
+
+        // MACD 柱状图
+        const macdChart = echarts.init(document.getElementById('macd-chart'));
+        const macdSeriesData = macdData.map((v, i) => ({{
+            value: v,
+            itemStyle: {{
+                color: v >= 0 ? '#ef232a' : '#14b143'
+            }}
+        }}));
+        const macdOption = {{
+            tooltip: {{
+                trigger: 'axis',
+                formatter: function(params) {{
+                    return '日期: ' + params[0].axisValue + '<br>MACD: ' + (params[0].data.value !== undefined ? params[0].data.value : params[0].data);
+                }}
+            }},
+            grid: {{ left: '3%', right: '4%', bottom: '12%', top: '8%', containLabel: true }},
+            xAxis: {{ type: 'category', data: dates, boundaryGap: true, axisLabel: {{ show: false }} }},
+            yAxis: {{ type: 'value', splitLine: {{ lineStyle: {{ type: 'dashed', color: '#eee' }} }} }},
+            dataZoom: [{{ type: 'inside', start: 0, end: 100 }}, {{ type: 'slider', start: 0, end: 100, height: 25, bottom: 10 }}],
+            series: [{{
+                name: 'MACD',
+                type: 'bar',
+                data: macdSeriesData,
+                barWidth: '60%'
+            }}]
+        }};
+        macdChart.setOption(macdOption);
+
+        // 联动缩放（使用 connect 实现更可靠的联动）
+        echarts.connect([chart, macdChart]);
+
+        window.addEventListener('resize', () => {{ chart.resize(); macdChart.resize(); }});
     </script>
 </body>
 </html>'''
@@ -181,9 +230,9 @@ def main():
     # 检查是否有 -o 参数（自动打开）
     auto_open = '-o' in sys.argv or '--open' in sys.argv
     
-    dates, prices, buy_points, sell_points = parse_output_file('out_put.txt')
+    dates, prices, macd_values, buy_points, sell_points = parse_output_file('out_put.txt')
     output_path = 'stock_chart_standalone.html'
-    generate_standalone_html(dates, prices, buy_points, sell_points, output_path)
+    generate_standalone_html(dates, prices, macd_values, buy_points, sell_points, output_path)
     
     # 如果指定了 -o 参数，自动打开HTML文件
     if auto_open:
