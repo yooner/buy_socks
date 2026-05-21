@@ -240,77 +240,38 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
     # 初始化交易状态
     position = 0  # 持仓数量
     cash = 100000  # 初始资金
-    buy_price = 0  # 买入价格
     trades = []  # 交易记录
     
-    # 定义上升类型和下降类型的趋势
-    rising_trends = ['上升趋势', '自然回升', '次级回升']
-    falling_trends = ['下降趋势', '自然回撤', '次级回撤']
+    # 仓位管理配置
+    MAX_POSITIONS = 8  # 最大8个仓位
+    PRICE_INCREASE_PCT = 0.05  # 每上涨5%加仓
     
-    # 观察期变量：用于从下降类型转为上升类型时，MACD为负的情况
-    observing_macd_positive = False  # 是否在观察MACD变正
-    observation_start_day = 0  # 观察开始的天数索引
+    # 仓位状态
+    position_count = 0  # 已买入的仓位数量
+    first_buy_price = 0  # 第一仓买入价格
+    last_buy_price = 0  # 上一仓买入价格
+    fixed_position_value = 0  # 每仓固定金额（第一仓买入时确定）
     
-    # 观察期变量：用于从自然回撤→上升趋势时，等待价格超过触发点
-    observing_natural_reaction_to_uptrend = False  # 是否在观察自然回撤→上升趋势的买入时机
-    natural_reaction_trigger_price = 0  # 自然回撤→上升趋势的触发价格（状态转换时的价格）
-
+    # MACD连续增长配置
+    MACD_GROWTH_DAYS_REQUIRED = 3  # MACD需要连续3天增长
     
-    # 上升阶段恢复相关变量
-    uptrend_end_price = 0  # 上升阶段结束时的价格
-    uptrend_recovery_active = False  # 是否处于上升阶段恢复观察中
-    SIX_POINTS_THRESHOLD = 0.20  # 6个点 = 20%涨幅
-    is_recovery_buy = False  # 是否是上升阶段恢复买入的持仓（恢复买入后MACD为负不卖出）
+    # 记录下降趋势的最低点
+    downtrend_lowest_price = 0  # 当前下降趋势的最低点
+    in_downtrend = False  # 是否在下降趋势中
+    after_downtrend = False  # 是否处于下降趋势之后（用于追踪MACD增长）
     
-    # 上升阶段恢复买入观察变量
-    observing_recovery_buy = False  # 是否在观察上升阶段恢复买入时机
-    recovery_buy_trigger_price = 0  # 恢复买入的触发价格（达到3个点时的价格）
+    # 标记是否已买入（避免同一下降趋势重复买入）
+    downtrend_buy_triggered = False  # 当前下降趋势是否已触发买入
     
-    # 新增：上升趋势卖出后观察MACD从小变大再买入
-    observing_macd_rebuy = False  # 是否在观察MACD从小变大再买入
-    macd_rebuy_start_day = 0  # 观察开始的天数索引
+    # 标记今天是否刚买入/卖出
+    just_bought_today = False
+    just_sold_today = False
     
-    # 新增：上升趋势分步卖出相关变量
-    uptrend_sell_stage = 0  # 上升趋势卖出阶段：0=未卖出，1=已卖50%，2=已清仓
-    consecutive_decline_days = 0  # 连续下降天数计数
+    # MACD连续增长计数
+    macd_growth_count = 0
     
-    # 新增：MACD再买入观察期间的连续增长天数计数
-    macd_rebuy_growth_count = 0  # MACD连续增长天数计数（用于再买入观察）
-    
-    # 新增：下降趋势→自然回升的DIF/MACD观察变量
-    DIF_MACD_GROWTH_DAYS = 3  # DIF与MACD连续向上增长的天数（可配置）
-    DIF_MACD_GROWTH_THRESHOLD = 0.20  # 增长幅度阈值
-    observing_dif_macd_growth = False  # 是否在观察DIF与MACD连续增长
-    dif_macd_growth_start_day = 0  # 观察开始的天数索引
-    
-    # 新增：防止卖出当天再买入的标志
-    just_sold_today = False  # 当天是否刚卖出
-    dif_macd_growth_first_dif = 0  # 第一天的DIF值
-    dif_macd_growth_first_macd = 0  # 第一天的MACD值
-    natural_rally_buy_triggered = False  # 自然回升买入是否已触发（买入后不再止损）
-    just_bought_today = False  # 标记今天是否刚买入（避免当天买入又卖出）
-    
-    # 新增：记录前一个上升趋势的高点
-    prev_uptrend_high = 0  # 前一个上升趋势的高点价格
-    dif_macd_growth_count = 0  # DIF与MACD连续增长天数计数
-    
-    # 新增：记录前一个下降趋势的低点（用于新策略）
-    prev_downtrend_low = 0  # 前一个下降趋势的低点价格
-    current_downtrend_low = 0  # 当前下降趋势的低点价格（用于判断同一下降趋势）
-    downtrend_buy_done = False  # 当前下降趋势是否已经买入过（避免同一趋势多次买入）
-    
-    # 新增：买入类型标记（用于区分两种不同的买入情况）
-    buy_type = 0  # 0=无持仓，1=第一种买入（下降未破前低），2=第二种买入（下降突破前低后在上升买入）
-    
-    # 新增：记录当前持仓的高点（用于连续回落判断）
-    position_high = 0  # 当前持仓期间的最高价格
-    consecutive_fall_days = 0  # 从高点连续回落天数
-    
-    # 新增：记录买入时的前高（用于判断是否突破前高）
-    buy_prev_uptrend_high = 0  # 买入时的前一个上升趋势高点
-    
-    # 新增：类型3买入后是否已经进入下一个上升趋势
-    type3_next_uptrend_started = False  # 类型3买入后，如果进入下一个上升趋势，设为True
+    # 记录前一天的持仓状态，用于判断是否是刚进入下降趋势
+    prev_day_position = 0
     
     header = f"{'日':<5} {'日期':<10} {'收盘':>8} {'ATR'+str(ATR_PERIOD):>8} {'波动率':>8} {'DIF':>8} {'DEA':>8} {'MACD':>8} {'市场状态':>10} {'持仓':>6} {'操作':>20}"
     log_print(header)
@@ -337,314 +298,157 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         
         action = ""  # 操作标记
         
-        # 获取前一天的市场状态（用于判断状态转换）
+        # ==========================================
+        # 新策略：交易逻辑
+        # ==========================================
+        
+        # 0. 清仓逻辑：如果刚变为下降趋势且持有仓位，立即清仓
+        # 条件：有持仓、当天未买入、当前是下降趋势、前一天不是下降趋势
         prev_market_state = df.loc[i-1, 'market_state'] if i > 0 else ""
+        is_downtrend_start = (market_state == '下降趋势' and prev_market_state != '下降趋势')
         
-        # 判断当前状态和前一天状态的趋势类型
-        curr_is_rising = market_state in rising_trends
-        curr_is_falling = market_state in falling_trends
-        prev_is_rising = prev_market_state in rising_trends if prev_market_state else False
-        prev_is_falling = prev_market_state in falling_trends if prev_market_state else False
+        if position > 0 and not just_bought_today and is_downtrend_start:
+            sell_price = close_price
+            cash += position * sell_price
+            total_capital = cash  # 清仓后总资金等于现金
+            profit = (sell_price - first_buy_price) * position if first_buy_price > 0 else 0
+            profit_pct = (sell_price - first_buy_price) / first_buy_price * 100 if first_buy_price > 0 else 0
+            print(f"[DEBUG-CLEAR] 日期:{date_str} 清仓后总资金:{total_capital:.0f} 本次盈亏:{profit:.0f}")
+            action = f"清仓@{sell_price:.2f} 盈亏:{profit:+.0f}({profit_pct:+.2f}%)"
+            trades.append({
+                'day': day_num,
+                'date': date_str,
+                'action': '清仓(下降趋势)',
+                'price': sell_price,
+                'quantity': position,
+                'profit': profit,
+                'profit_pct': profit_pct
+            })
+            # 重置所有仓位状态
+            position = 0
+            position_count = 0
+            first_buy_price = 0
+            last_buy_price = 0
+            fixed_position_value = 0  # 重置每仓固定金额
+            just_sold_today = True
+            after_downtrend = False  # 重置追踪状态
         
-        # 记录前一个上升趋势的高点：当从上升趋势转为非上升趋势时，记录高点
-        if prev_market_state == '上升趋势' and market_state != '上升趋势':
-            # 找到前一个上升趋势期间的最高价格
-            j = i - 1
-            uptrend_high = df.loc[j, '收盘']
-            while j > 0 and df.loc[j, 'market_state'] == '上升趋势':
-                if df.loc[j, '收盘'] > uptrend_high:
-                    uptrend_high = df.loc[j, '收盘']
-                j -= 1
-            prev_uptrend_high = uptrend_high
-            
-            # 如果是类型3买入，标记已经进入下一个上升趋势（从下一个上升趋势转为非上升时）
-            if buy_type == 3 and not type3_next_uptrend_started:
-                type3_next_uptrend_started = True
-        
-        # 记录前一个下降趋势的低点：当从下降趋势转为非下降趋势时，记录低点
-        if prev_market_state == '下降趋势' and market_state != '下降趋势':
-            # 找到前一个下降趋势期间的最低价格
-            j = i - 1
-            downtrend_low = df.loc[j, '收盘']
-            while j > 0 and df.loc[j, 'market_state'] == '下降趋势':
-                if df.loc[j, '收盘'] < downtrend_low:
-                    downtrend_low = df.loc[j, '收盘']
-                j -= 1
-            prev_downtrend_low = downtrend_low
-            current_downtrend_low = downtrend_low  # 记录当前下降趋势的低点
-            downtrend_buy_done = False  # 新下降趋势开始，重置买入标志
-        
-        # ==========================================
-        # 新策略：买入逻辑
-        # ==========================================
-        
-        # 买入情况1：在下降趋势中，未突破前一个下降趋势的低点，MACD连续2天增长买入
-        # 买入情况2：在下降趋势中，突破了前一个下降趋势的低点，在随后的上升趋势买入
-        
-        # 检查MACD是否连续增长（跨越市场状态）
-        if position == 0:
-            current_macd = df.loc[i, 'MACD']
-            prev_macd = df.loc[i-1, 'MACD'] if i > 0 else None
-            
-            # 检查MACD是否连续增长（可以跨越下降趋势、自然回升、上升趋势）
-            if pd.notna(current_macd) and pd.notna(prev_macd) and current_macd > prev_macd:
-                macd_rebuy_growth_count += 1
+        # 1. 跟踪下降趋势最低点
+        if market_state == '下降趋势':
+            if not in_downtrend:
+                # 刚进入下降趋势，重置状态
+                in_downtrend = True
+                after_downtrend = True  # 在下降趋势中也要追踪买入机会
+                downtrend_lowest_price = close_price
+                downtrend_buy_triggered = False
+                macd_growth_count = 0
             else:
-                macd_rebuy_growth_count = 0
+                # 更新最低点
+                if close_price < downtrend_lowest_price:
+                    downtrend_lowest_price = close_price
+                    # 创新低后重置MACD计数和买入触发标志
+                    macd_growth_count = 0
+                    downtrend_buy_triggered = False
+        else:
+            # 非下降趋势
+            if in_downtrend:
+                # 刚离开下降趋势，继续追踪MACD增长
+                in_downtrend = False
+                after_downtrend = True
         
-        if position == 0:
-            # 检查MACD是否连续2天增长（可以跨越下降趋势、自然回升、上升趋势）
-            if macd_rebuy_growth_count >= 2:
-                # 判断当前市场状态和买入类型
-                if market_state == '下降趋势':
-                    # 情况1：在下降趋势中，未突破前一个下降趋势的低点，且同一下降趋势未买入过
-                    if prev_downtrend_low > 0 and close_price > prev_downtrend_low and not downtrend_buy_done:
-                        buy_price = close_price
-                        position = int(cash / buy_price / 100) * 100
-                        if position > 0:
-                            cash -= position * buy_price
-                            action = f"买入@{buy_price:.2f}(类型1:下降未破前低)"
-                            trades.append({
-                                'day': day_num,
-                                'date': date_str,
-                                'action': '买入类型1',
-                                'price': buy_price,
-                                'quantity': position
-                            })
-                            buy_type = 1
-                            position_high = close_price
-                            consecutive_fall_days = 0
-                            just_bought_today = True  # 标记当天已买入
-                            downtrend_buy_done = True  # 标记同一下降趋势已买入
-                            buy_prev_uptrend_high = prev_uptrend_high  # 记录买入时的前高
-                            macd_rebuy_growth_count = 0  # 买入后重置计数
-                elif market_state in ['自然回升', '上升趋势']:
-                    # MACD连续增长跨越到自然回升或上升趋势，也按类型1买入
-                    # 但需要检查前低条件（使用最近的下降趋势低点）且同一下降趋势未买入过
-                    if prev_downtrend_low > 0 and close_price > prev_downtrend_low and not downtrend_buy_done:
-                        buy_price = close_price
-                        position = int(cash / buy_price / 100) * 100
-                        if position > 0:
-                            cash -= position * buy_price
-                            action = f"买入@{buy_price:.2f}(类型1:MACD连增跨越)"
-                            trades.append({
-                                'day': day_num,
-                                'date': date_str,
-                                'action': '买入类型1',
-                                'price': buy_price,
-                                'quantity': position
-                            })
-                            buy_type = 1
-                            position_high = close_price
-                            consecutive_fall_days = 0
-                            just_bought_today = True  # 标记当天已买入
-                            downtrend_buy_done = True  # 标记同一下降趋势已买入
-                            buy_prev_uptrend_high = prev_uptrend_high  # 记录买入时的前高
-                            macd_rebuy_growth_count = 0  # 买入后重置计数
-            
-            # 检查是否从下降趋势转为上升趋势（情况2的买入）
-            if prev_market_state == '下降趋势' and market_state == '上升趋势':
-                # 检查之前的下降趋势是否突破了前一个低点
-                if prev_downtrend_low > 0:
-                    # 找到当前下降趋势的最低点
-                    j = i - 1
-                    current_downtrend_low = df.loc[j, '收盘']
-                    while j > 0 and df.loc[j, 'market_state'] == '下降趋势':
-                        if df.loc[j, '收盘'] < current_downtrend_low:
-                            current_downtrend_low = df.loc[j, '收盘']
-                        j -= 1
-                    
-                    # 如果当前下降趋势突破了前一个下降趋势的低点
-                    if current_downtrend_low <= prev_downtrend_low:
-                        # 情况2：在上升趋势买入
-                        buy_price = close_price
-                        position = int(cash / buy_price / 100) * 100
-                        if position > 0:
-                            cash -= position * buy_price
-                            action = f"买入@{buy_price:.2f}(类型2:突破前低后上升)"
-                            trades.append({
-                                'day': day_num,
-                                'date': date_str,
-                                'action': '买入类型2',
-                                'price': buy_price,
-                                'quantity': position
-                            })
-                            buy_type = 2
-                            position_high = close_price
-                            consecutive_fall_days = 0
-                            just_bought_today = True  # 标记当天已买入
-                            buy_prev_uptrend_high = prev_uptrend_high  # 记录买入时的前高
+        # 2. 计算MACD连续增长天数（从下降趋势最低点之后开始追踪）
+        # 在下降趋势中或离开下降趋势后，都可以计算MACD增长
+        if after_downtrend and position == 0 and not downtrend_buy_triggered:
+            if i > 0:
+                prev_macd = df.loc[i-1, 'MACD']
+                if pd.notna(macd) and pd.notna(prev_macd):
+                    if macd > prev_macd:
+                        macd_growth_count += 1
+                    else:
+                        macd_growth_count = 0
         
-        # ==========================================
-        # 新策略：卖出逻辑
-        # ==========================================
-        
-        # 更新持仓期间的最高价格
-        # 1. 从上升类型转为下降类型时卖出
-        # 2. 在自然回升或次级回升中，MACD从大变小卖出
-        # 更新持仓期间的最高价格
-        if position > 0 and close_price > position_high:
-            position_high = close_price
-            consecutive_fall_days = 0  # 重置连续回落天数
-        
-        # 检查是否从高点回落
-        if position > 0 and close_price < position_high:
-            consecutive_fall_days += 1
-        
-        # 卖出逻辑
-        if position > 0 and not just_bought_today:
-            sell_signal = False
-            
-            # 类型1买入的卖出条件
-            if buy_type == 1:
-                # 条件1：跌破了前一个下降趋势的低点
-                if prev_downtrend_low > 0 and close_price <= prev_downtrend_low:
-                    sell_signal = True
-                
-                # 条件2：变为下降趋势时卖出（但买入当天不卖出）
-                elif market_state == '下降趋势':
-                    sell_signal = True
-                
-                # 条件3：在上升趋势中买入后未突破前高，转为自然回撤时卖出
-                elif market_state == '自然回撤':
-                    if buy_prev_uptrend_high > 0 and position_high <= buy_prev_uptrend_high:
-                        sell_signal = True
-            
-            # 类型2买入的卖出条件
-            elif buy_type == 2:
-                # 条件1：在上升趋势中买入后未突破前高，转为自然回撤时卖出
-                if market_state == '自然回撤':
-                    if buy_prev_uptrend_high > 0 and position_high <= buy_prev_uptrend_high:
-                        sell_signal = True
-                
-                # 条件2：在上升趋势中买入后未突破前高，转为下降趋势时卖出
-                elif market_state == '下降趋势':
-                    # 检查是否未突破前高（买入后的最高价 <= 前高）
-                    if buy_prev_uptrend_high > 0 and position_high <= buy_prev_uptrend_high:
-                        sell_signal = True
-            
-            # 类型3买入（突破买入）的卖出条件
-            elif buy_type == 3:
-                # 如果已经进入下一个上升趋势，卖出条件跟类型1、2一样
-                if type3_next_uptrend_started:
-                    # 条件1：在上升趋势中买入后未突破前高，转为自然回撤时卖出
-                    if market_state == '自然回撤':
-                        if buy_prev_uptrend_high > 0 and position_high <= buy_prev_uptrend_high:
-                            sell_signal = True
-                    
-                    # 条件2：转为下降趋势时卖出
-                    elif market_state == '下降趋势':
-                        sell_signal = True
-                else:
-                    # 还在突破买入的那个上升趋势中
-                    # 条件1：在自然回撤时跌破前一个上升趋势的高点
-                    if market_state == '自然回撤':
-                        if prev_uptrend_high > 0 and close_price <= prev_uptrend_high:
-                            sell_signal = True
-                    
-                    # 条件2：转为下降趋势时卖出
-                    elif market_state == '下降趋势':
-                        sell_signal = True
-            
-            if sell_signal:
-                # 执行卖出
-                sell_price = close_price
-                cash += position * sell_price
-                profit = (sell_price - buy_price) * position
-                profit_pct = (sell_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
-                action = f"卖出@{sell_price:.2f} 盈亏:{profit:+.0f}({profit_pct:+.2f}%)"
-                trades.append({
-                    'day': day_num,
-                    'date': date_str,
-                    'action': '卖出',
-                    'price': sell_price,
-                    'quantity': position,
-                    'profit': profit,
-                    'profit_pct': profit_pct
-                })
-                position = 0
-                buy_price = 0
-                just_sold_today = True  # 标记当天已卖出
-                
-                # 重置买入类型和相关变量
-                buy_type = 0
-                position_high = 0
-                consecutive_fall_days = 0
-                buy_prev_uptrend_high = 0  # 重置买入时的前高
-                type3_next_uptrend_started = False  # 重置类型3买入的下一个上升趋势标志
-        
-        # ==========================================
-        # 突破前高后的再买入逻辑
-        # ==========================================
-        # 在卖出后（position=0），如果价格突破了前高，则再次买入
-        # 条件：1. 当天没有卖出；2. 价格突破前高；3. 在上升趋势中
-        if position == 0 and not just_sold_today and market_state == '上升趋势' and prev_uptrend_high > 0 and close_price > prev_uptrend_high:
-            # 突破前高，执行买入
-            buy_price = close_price
-            position = int(cash / buy_price / 100) * 100
-            if position > 0:
-                cash -= position * buy_price
-                action = f"买入@{buy_price:.2f}(突破前高)"
-                trades.append({
-                    'day': day_num,
-                    'date': date_str,
-                    'action': '突破买入',
-                    'price': buy_price,
-                    'quantity': position
-                })
-                buy_type = 3  # 标记为突破买入类型
-                position_high = close_price
-                consecutive_fall_days = 0
-                just_bought_today = True  # 标记当天已买入
-                # 记录买入时的前高，如果没有前高记录，则使用买入价格作为参考
-                buy_prev_uptrend_high = prev_uptrend_high if prev_uptrend_high > 0 else buy_price
-        
-
-        # 条件：在上升趋势中，处于恢复观察状态，价格从上升阶段结束时的价格上升3个点（固定数值）以上
-        # 上升阶段恢复买入逻辑
-        
-        # 如果状态变为非上升趋势，取消恢复买入观察
-        if market_state != '上升趋势' and observing_recovery_buy:
-            observing_recovery_buy = False
-            recovery_buy_trigger_price = 0
-        
-        if market_state == '上升趋势' and uptrend_recovery_active and uptrend_end_price > 0:
-            # 3个点是固定数值（元），根据上升阶段结束时的价格计算（3个点 = 6个点的一半）
-            six_points_value = get_six_points_by_price(uptrend_end_price)
-            if six_points_value is None:
-                six_points_value = uptrend_end_price * 0.20  # 如果获取不到，默认使用20%
-            three_points_value = six_points_value / 2  # 3个点 = 6个点的一半
-            price_increase = close_price - uptrend_end_price
-            
-            # 如果价格达到3个点，开始观察，记录触发价格
-            if price_increase >= three_points_value and not observing_recovery_buy:
-                observing_recovery_buy = True
-                recovery_buy_trigger_price = close_price
-                action = f"观察恢复买入(触发价:{recovery_buy_trigger_price:.2f})"
-            
-            # 如果已经在观察中，且价格超过触发点，执行买入
-            if observing_recovery_buy and close_price > recovery_buy_trigger_price:
+        # 3. 第一仓买入逻辑：从下降趋势最低点开始，MACD连续3天增长就买入
+        # 在下降趋势中或离开下降趋势后，都可以买入
+        if position == 0 and after_downtrend and not downtrend_buy_triggered:
+            if macd_growth_count >= MACD_GROWTH_DAYS_REQUIRED:
+                # 计算总资金（现金 + 持仓股票价值）
+                total_capital = cash + position * close_price
+                # 计算每仓固定金额（基于总资金分8仓，第一仓买入时确定）
+                fixed_position_value = total_capital / MAX_POSITIONS
                 buy_price = close_price
-                buy_quantity = int(cash / buy_price / 100) * 100  # 整手买入
-                if buy_quantity > 0:
-                    cash -= buy_quantity * buy_price
-                    position += buy_quantity  # 加仓
-                    action = f"上升阶段恢复买入@{buy_price:.2f}"
+                buy_quantity = int(fixed_position_value / buy_price / 100) * 100
+                print(f"[DEBUG-BUY1] 日期:{date_str} 总资金:{total_capital:.0f} 每仓金额:{fixed_position_value:.0f} 价格:{buy_price:.2f} 计算股数:{buy_quantity}")
+                if buy_quantity > 0 and cash >= buy_quantity * buy_price:
+                    position = buy_quantity
+                    cash -= position * buy_price
+                    first_buy_price = buy_price
+                    last_buy_price = buy_price
+                    position_count = 1
+                    downtrend_buy_triggered = True
+                    just_bought_today = True
+                    action = f"买入第1仓@{buy_price:.2f} x{position}股"
                     trades.append({
                         'day': day_num,
                         'date': date_str,
-                        'action': '上升阶段恢复买入',
+                        'action': '买入第1仓',
+                        'price': buy_price,
+                        'quantity': position
+                    })
+        
+        # 4. 加仓逻辑：每上涨5%加一仓
+        if position > 0 and position_count < MAX_POSITIONS and not just_bought_today:
+            target_price = last_buy_price * (1 + PRICE_INCREASE_PCT)
+            if close_price >= target_price:
+                # 使用固定的每仓金额（第一仓买入时确定）
+                buy_price = close_price
+                buy_quantity = int(fixed_position_value / buy_price / 100) * 100
+                total_capital = cash + position * close_price
+                print(f"[DEBUG-ADD] 日期:{date_str} 总资金:{total_capital:.0f} 每仓金额:{fixed_position_value:.0f} 价格:{buy_price:.2f} 计算股数:{buy_quantity} 当前持仓:{position}")
+                if buy_quantity > 0 and cash >= buy_quantity * buy_price:
+                    position += buy_quantity
+                    cash -= buy_quantity * buy_price
+                    position_count += 1
+                    last_buy_price = buy_price
+                    just_bought_today = True
+                    action = f"加仓第{position_count}仓@{buy_price:.2f} x{buy_quantity}股"
+                    trades.append({
+                        'day': day_num,
+                        'date': date_str,
+                        'action': f'加仓第{position_count}仓',
                         'price': buy_price,
                         'quantity': buy_quantity
                     })
-                    uptrend_recovery_active = False  # 重置恢复观察状态
-                    uptrend_end_price = 0
-                    # 标记为恢复买入持仓
-                    is_recovery_buy = True
-                    # 重置观察状态
-                    observing_recovery_buy = False
-                    recovery_buy_trigger_price = 0
-                    observing_dif_macd_growth = False  # 重置DIF/MACD观察状态
+        
+        # 5. 止损逻辑：买入后如果还在下降趋势中，MACD从大变小就卖出
+        # 条件：有持仓，且当前市场状态是下降趋势
+        if position > 0 and market_state == '下降趋势' and not just_bought_today:
+            if i > 0:
+                prev_macd = df.loc[i-1, 'MACD']
+                if pd.notna(macd) and pd.notna(prev_macd):
+                    if macd < prev_macd:  # MACD从大变小
+                        sell_price = close_price
+                        cash += position * sell_price
+                        profit = (sell_price - first_buy_price) * position
+                        profit_pct = (sell_price - first_buy_price) / first_buy_price * 100
+                        action = f"止损卖出@{sell_price:.2f} 盈亏:{profit:+.0f}({profit_pct:+.2f}%)"
+                        trades.append({
+                            'day': day_num,
+                            'date': date_str,
+                            'action': '止损卖出(下降中MACD变小)',
+                            'price': sell_price,
+                            'quantity': position,
+                            'profit': profit,
+                            'profit_pct': profit_pct
+                        })
+                        # 重置所有仓位状态
+                        position = 0
+                        position_count = 0
+                        first_buy_price = 0
+                        last_buy_price = 0
+                        fixed_position_value = 0  # 重置每仓固定金额
+                        just_sold_today = True
+                        downtrend_buy_triggered = False  # 允许再次买入
+                        after_downtrend = False
         
         # 格式化输出
         line = f"{day_num:<5} {date_str:<10} {close_price:>8.2f}"
@@ -689,7 +493,7 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         line += f" {position:>6}"
         
         # 操作
-        line += f" {action:>20}"
+        line += f" {action:>30}"
         
         log_print(line)
     
@@ -709,24 +513,14 @@ def _run_backtest_with_trading(stock_code: str, df: pd.DataFrame):
         log_print(f"\n{'='*130}")
         log_print("【交易明细】")
         for trade in trades:
-            if trade['action'] == '买入':
-                log_print(f"  买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '上升阶段恢复买入':
-                log_print(f"  上升阶段恢复买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '自然回升买入':
-                log_print(f"  自然回升买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '买入类型1':
-                log_print(f"  买入类型1: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '买入类型2':
-                log_print(f"  买入类型2: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '突破买入':
-                log_print(f"  突破买入: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '卖出50%':
-                log_print(f"  卖出50%: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股 盈亏:{trade['profit']:+.0f}({trade['profit_pct']:+.2f}%)")
-            elif trade['action'] == '买回':
-                log_print(f"  买回: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
-            elif trade['action'] == '卖出':
-                log_print(f"  卖出: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股 盈亏:{trade['profit']:+.0f}({trade['profit_pct']:+.2f}%)")
+            if trade['action'] == '买入第1仓':
+                log_print(f"  买入第1仓: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
+            elif trade['action'].startswith('加仓第'):
+                log_print(f"  {trade['action']}: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
+            elif trade['action'] == '清仓(下降趋势)':
+                log_print(f"  清仓(下降趋势): {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股 盈亏:{trade['profit']:+.0f}({trade['profit_pct']:+.2f}%)")
+            elif trade['action'] == '止损卖出(下降中MACD变小)':
+                log_print(f"  止损卖出(下降中MACD变小): {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股 盈亏:{trade['profit']:+.0f}({trade['profit_pct']:+.2f}%)")
             else:
                 log_print(f"  {trade['action']}: {trade['date']} @ {trade['price']:.2f} x {trade['quantity']}股")
     
@@ -755,15 +549,15 @@ if __name__ == "__main__":
     if result and generate_chart:
         print("\n[正在生成图表...]")
         try:
-            # 调用 generate_standalone_chart.py 生成图表
+            # 调用 generate_chart_with_states.py 生成带市场状态的图表
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            chart_script = os.path.join(script_dir, 'generate_standalone_chart.py')
+            chart_script = os.path.join(script_dir, 'generate_chart_with_states.py')
             
             if os.path.exists(chart_script):
                 subprocess.run([sys.executable, chart_script], check=True)
                 
                 # 打开生成的HTML文件
-                html_file = os.path.join(script_dir, 'stock_chart_standalone.html')
+                html_file = os.path.join(script_dir, 'stock_chart_with_states.html')
                 if os.path.exists(html_file):
                     print(f"[正在打开图表: {html_file}]")
                     if os.name == 'nt':  # Windows
