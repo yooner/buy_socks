@@ -11,8 +11,8 @@
 - 次级回撤 (SECONDARY_REACTION)
 
 转换规则:
-- 6个点 = 20%
-- 3个点 = 10%
+- 6个点、3个点由价格区间配置为固定价差
+- 也兼容旧的百分比阈值模式
 """
 
 from enum import Enum, auto
@@ -32,6 +32,7 @@ SIX_POINTS_CONFIG = {
     (200, 500): 13.0    # 200~500元：13元
 }
 MIN_PRICE_TO_OPERATE = 1.5  # 最小操作股价（低于此价格不操作）
+STATE_TRANSITION_CONFIRM_DAYS = 2  # 状态转换需要连续满足条件的交易日数
 
 
 def get_six_points_by_price(price: float) -> float:
@@ -176,6 +177,40 @@ class MarketStateAnalyzer:
             return fixed_value / price
         return self.THREE_POINTS_PCT
 
+    def _get_six_points_value(self, reference_price: float) -> Optional[float]:
+        """获取以参考价为基准的6个点绝对价差。"""
+        if reference_price is None or reference_price <= 0:
+            return None
+        if self.use_fixed_value_mode:
+            fixed_value = self.six_points_func(reference_price)
+            return fixed_value if fixed_value is not None else reference_price * 0.20
+        return reference_price * self.SIX_POINTS_PCT
+
+    def _get_three_points_value(self, reference_price: float) -> Optional[float]:
+        """获取以参考价为基准的3个点绝对价差。"""
+        if reference_price is None or reference_price <= 0:
+            return None
+        if self.use_fixed_value_mode:
+            fixed_value = self.three_points_func(reference_price)
+            return fixed_value if fixed_value is not None else reference_price * 0.10
+        return reference_price * self.THREE_POINTS_PCT
+
+    def _rise_reaches_six_points(self, reference_price: float, price: float) -> bool:
+        threshold = self._get_six_points_value(reference_price)
+        return threshold is not None and (price - reference_price) >= threshold
+
+    def _drop_reaches_six_points(self, reference_price: float, price: float) -> bool:
+        threshold = self._get_six_points_value(reference_price)
+        return threshold is not None and (reference_price - price) >= threshold
+
+    def _rise_reaches_three_points(self, reference_price: float, price: float) -> bool:
+        threshold = self._get_three_points_value(reference_price)
+        return threshold is not None and (price - reference_price) >= threshold
+
+    def _drop_reaches_three_points(self, reference_price: float, price: float) -> bool:
+        threshold = self._get_three_points_value(reference_price)
+        return threshold is not None and (reference_price - price) >= threshold
+
     def _initialize_state_tracking(self):
         """初始化状态跟踪变量"""
         # 各状态的关键点记录 - 记录历史上各状态的关键价位
@@ -204,6 +239,10 @@ class MarketStateAnalyzer:
         
         # 记录上一次状态转换的参考价格（用于显示转换信息）
         self.last_transition_ref_price: Optional[float] = None
+
+        # 状态转换确认：候选状态必须连续满足条件才真正转换
+        self.pending_transition_state: Optional[MarketState] = None
+        self.pending_transition_count: int = 0
         
         # 新增：阶段结束标志跟踪
         # 下降阶段结束标志：未突破前低，从本轮低点反弹3点及以上
@@ -302,6 +341,68 @@ class MarketStateAnalyzer:
         self.current_natural_rally_high = None
         self.current_natural_reaction_low = None
         self.secondary_rally_high = None
+        self.secondary_reaction_low = None
+
+    def _capture_tracking_state(self) -> Dict[str, Optional[float]]:
+        """捕获 _determine_state 可能产生的临时状态变更。"""
+        return {
+            'natural_rally_high': self.natural_rally_high,
+            'natural_reaction_low': self.natural_reaction_low,
+            'up_trend_high': self.up_trend_high,
+            'down_trend_low': self.down_trend_low,
+            'secondary_rally_high': self.secondary_rally_high,
+            'secondary_reaction_low': self.secondary_reaction_low,
+            'current_natural_rally_high': self.current_natural_rally_high,
+            'current_natural_reaction_low': self.current_natural_reaction_low,
+            'last_natural_rally_high': self.last_natural_rally_high,
+            'last_natural_reaction_low': self.last_natural_reaction_low,
+            'last_up_trend_high': self.last_up_trend_high,
+            'last_down_trend_low': self.last_down_trend_low,
+            'last_transition_ref_price': self.last_transition_ref_price,
+            'current_segment_key_point': self.current_segment.key_point if self.current_segment else None,
+        }
+
+    def _restore_tracking_state(self, snapshot: Dict[str, Optional[float]]):
+        """回滚未确认状态转换造成的临时变更。"""
+        self.natural_rally_high = snapshot['natural_rally_high']
+        self.natural_reaction_low = snapshot['natural_reaction_low']
+        self.up_trend_high = snapshot['up_trend_high']
+        self.down_trend_low = snapshot['down_trend_low']
+        self.secondary_rally_high = snapshot['secondary_rally_high']
+        self.secondary_reaction_low = snapshot['secondary_reaction_low']
+        self.current_natural_rally_high = snapshot['current_natural_rally_high']
+        self.current_natural_reaction_low = snapshot['current_natural_reaction_low']
+        self.last_natural_rally_high = snapshot['last_natural_rally_high']
+        self.last_natural_reaction_low = snapshot['last_natural_reaction_low']
+        self.last_up_trend_high = snapshot['last_up_trend_high']
+        self.last_down_trend_low = snapshot['last_down_trend_low']
+        self.last_transition_ref_price = snapshot['last_transition_ref_price']
+        if self.current_segment is not None:
+            self.current_segment.key_point = snapshot['current_segment_key_point']
+
+    def _clear_pending_transition(self):
+        self.pending_transition_state = None
+        self.pending_transition_count = 0
+
+    def _confirm_state_transition(self, candidate_state: MarketState, snapshot: Dict[str, Optional[float]]) -> MarketState:
+        """候选状态连续满足确认天数后，才允许真正转换。"""
+        if candidate_state == self.current_state:
+            self._clear_pending_transition()
+            return self.current_state
+
+        if self.pending_transition_state == candidate_state:
+            self.pending_transition_count += 1
+        else:
+            self.pending_transition_state = candidate_state
+            self.pending_transition_count = 1
+
+        if self.pending_transition_count >= STATE_TRANSITION_CONFIRM_DAYS:
+            self._clear_pending_transition()
+            return candidate_state
+
+        self._restore_tracking_state(snapshot)
+        return self.current_state
+
     def _process_day(self, idx: int, date, price: float, dif: Optional[float] = None):
         """处理每一天的状态转换"""
         date_str = str(date)[:10]
@@ -310,8 +411,10 @@ class MarketStateAnalyzer:
         prev_dif_high = self.daily_states[-1].dif_high
         prev_dif_observing = self.daily_states[-1].dif_observing
         
-        # 根据当前状态判断转换
-        new_state = self._determine_state(price, prev_price, date_str)
+        # 根据当前状态判断候选转换；候选状态必须连续满足确认天数才真正转换。
+        tracking_snapshot = self._capture_tracking_state()
+        candidate_state = self._determine_state(price, prev_price, date_str)
+        new_state = self._confirm_state_transition(candidate_state, tracking_snapshot)
         
         # 默认允许买入（仅在 下降趋势→自然回升 场景下按规则可能改为不允许）
         allow_buy_down_to_rally = True
@@ -321,6 +424,8 @@ class MarketStateAnalyzer:
             # 获取前一段落的关键价格（用于转换信息）
             prev_state = self.current_state
             prev_key_point = self.current_segment.key_point if self.current_segment else prev_price
+            prev_segment_start_price = self.current_segment.start_price if self.current_segment else prev_price
+            prev_last_up_trend_high = self.last_up_trend_high
             prev_last_down_trend_low = self.last_down_trend_low
 
             # 记录“上一轮自然回升/自然回撤”的真实关键点（只在离开该段时更新）
@@ -378,8 +483,10 @@ class MarketStateAnalyzer:
             is_end = True  # 同一天既是前一段落的结束，也是新段落的开始
             
             # 计算转换信息（记录在当前天 - 状态转换的当天）
-            price_change = price - prev_key_point
-            notes = f"从{prev_state.value}→{new_state.value} | 前段关键点:{prev_key_point:.2f}→{price:.2f} ({price_change:+.2f}元)"
+            transition_ref_price = self.last_transition_ref_price if self.last_transition_ref_price is not None else prev_key_point
+            self.last_transition_ref_price = None
+            price_change = price - transition_ref_price
+            notes = f"从{prev_state.value}→{new_state.value} | 参考关键点:{transition_ref_price:.2f}→{price:.2f} ({price_change:+.2f}元)"
             
             # 下降趋势→自然回升：本轮下降趋势未跌破上一轮下降趋势低点时，才允许买入
             if prev_state == MarketState.DOWN_TREND and new_state == MarketState.NATURAL_RALLY:
@@ -425,11 +532,11 @@ class MarketStateAnalyzer:
             # 状态转换时：检测阶段结束标志
             # 上升趋势结束时，检测上升阶段结束标志
             if prev_state == MarketState.UP_TREND and new_state != MarketState.UP_TREND:
-                self._check_uptrend_end_flag(price, date_str, current_dif, current_dif_high)
+                self._check_uptrend_end_flag(price, date_str, prev_last_up_trend_high)
             
             # 下降趋势结束时，检测下降阶段结束标志
             if prev_state == MarketState.DOWN_TREND and new_state != MarketState.DOWN_TREND:
-                self._check_downtrend_end_flags(price, date_str)
+                self._check_downtrend_end_flags(price, date_str, prev_last_down_trend_low)
             
             # 状态转换时重置标志
             if self.current_state == MarketState.UP_TREND:
@@ -470,18 +577,13 @@ class MarketStateAnalyzer:
     
     def _determine_state(self, price: float, prev_price: float, date_str: str = "") -> MarketState:
         """根据当前价格判断状态"""
-        # 获取当前价格对应的阈值
-        six_points = self._get_six_points(price)
-        three_points = self._get_three_points(price)
-        
         if self.current_state == MarketState.UP_TREND:
-            # 上升趋势 → 自然回撤: 当前段落最高点下降6个点(20%)
+            # 上升趋势 → 自然回撤: 当前段落最高点下降6个点
             # 注意：上升趋势只能转为自然回撤，不能直接转为次级回撤
             # 使用当前段落的关键点，而不是历史最高点
             current_segment_high = self.current_segment.key_point if self.current_segment else self.up_trend_high
             if current_segment_high:
-                drop_pct = (current_segment_high - price) / current_segment_high
-                if drop_pct >= six_points:
+                if self._drop_reaches_six_points(current_segment_high, price):
                     # 转为自然回撤
                     self.current_natural_reaction_low = price
                     # 更新历史最低点和上一次自然回撤低点
@@ -496,15 +598,14 @@ class MarketStateAnalyzer:
         
         elif self.current_state == MarketState.NATURAL_REACTION:
             # 自然回撤 → 下降趋势: 
-            # 条件1: 相比上一次自然回撤低点下跌 THREE_POINTS_PCT
+            # 条件1: 相比上一次自然回撤低点下跌3个点
             # 条件2: 或者跌破上一轮下降趋势的最低点
             can_convert_to_downtrend = False
             ref_price_for_note = 0
             
-            # 条件1: 相比上一次自然回撤低点下跌 THREE_POINTS_PCT
+            # 条件1: 相比上一次自然回撤低点下跌3个点
             if self.last_natural_reaction_low:
-                drop_pct_from_last_natural_reaction_low = (self.last_natural_reaction_low - price) / self.last_natural_reaction_low
-                if drop_pct_from_last_natural_reaction_low >= three_points:
+                if self._drop_reaches_three_points(self.last_natural_reaction_low, price):
                     can_convert_to_downtrend = True
                     ref_price_for_note = self.last_natural_reaction_low
             
@@ -523,14 +624,12 @@ class MarketStateAnalyzer:
                         self.natural_reaction_low = price
                 return MarketState.DOWN_TREND
             
-            # 自然回撤 → 自然回升/次级回升/上升趋势: 从最低点上升6个点(20%)
+            # 自然回撤 → 自然回升/次级回升/上升趋势: 从最低点上升6个点
             if self.current_natural_reaction_low:
-                rise_pct = (price - self.current_natural_reaction_low) / self.current_natural_reaction_low
-                if rise_pct >= six_points:
+                if self._rise_reaches_six_points(self.current_natural_reaction_low, price):
                     # 判断是否可以直接转为上升趋势（突破上一轮自然回升高点超过3个点）
                     if self.last_natural_rally_high and price > self.last_natural_rally_high:
-                        rise_pct_from_last_rally = (price - self.last_natural_rally_high) / self.last_natural_rally_high
-                        if rise_pct_from_last_rally >= three_points:
+                        if self._rise_reaches_three_points(self.last_natural_rally_high, price):
                             # 直接转为上升趋势
                             self.up_trend_high = price
                             if self.natural_rally_high is None or price > self.natural_rally_high:
@@ -555,13 +654,12 @@ class MarketStateAnalyzer:
             return MarketState.NATURAL_REACTION
         
         elif self.current_state == MarketState.DOWN_TREND:
-            # 下降趋势 → 自然回升: 当前段落最低点上升6个点(20%)
+            # 下降趋势 → 自然回升: 当前段落最低点上升6个点
             # 注意：下降趋势只能转为自然回升，不能直接转为次级回升
             # 使用当前段落的关键点，而不是历史最低点
             current_segment_low = self.current_segment.key_point if self.current_segment else self.down_trend_low
             if current_segment_low:
-                rise_pct = (price - current_segment_low) / current_segment_low
-                if rise_pct >= six_points:
+                if self._rise_reaches_six_points(current_segment_low, price):
                     # 转为自然回升
                     self.current_natural_rally_high = price
                     # 更新历史自然回升高点和上一次自然回升高点
@@ -576,15 +674,14 @@ class MarketStateAnalyzer:
         
         elif self.current_state == MarketState.NATURAL_RALLY:
             # 自然回升 → 上升趋势:
-            # 条件1: 突破上一轮自然回升最高点 THREE_POINTS_PCT
+            # 条件1: 突破上一轮自然回升最高点3个点
             # 条件2: 或者突破上升趋势最高点
             can_convert_to_uptrend = False
             ref_price_for_note = 0
             
-            # 条件1: 突破上一轮自然回升最高点 THREE_POINTS_PCT
+            # 条件1: 突破上一轮自然回升最高点3个点
             if self.last_natural_rally_high:
-                rise_pct_from_last_natural_rally_high = (price - self.last_natural_rally_high) / self.last_natural_rally_high
-                if rise_pct_from_last_natural_rally_high >= three_points:
+                if self._rise_reaches_three_points(self.last_natural_rally_high, price):
                     can_convert_to_uptrend = True
                     ref_price_for_note = self.last_natural_rally_high
             
@@ -601,11 +698,10 @@ class MarketStateAnalyzer:
                 self._reset_state_tracking()  # 进入新趋势，重置跟踪变量
                 return MarketState.UP_TREND
             
-            # 自然回升 → 自然回撤/次级回撤: 从最高点下降6个点(20%)
+            # 自然回升 → 自然回撤/次级回撤: 从最高点下降6个点
             # 注意：自然回升只能转为自然回撤或次级回撤，不能直接转为下降趋势
             if self.current_natural_rally_high:
-                drop_pct = (self.current_natural_rally_high - price) / self.current_natural_rally_high
-                if drop_pct >= six_points:
+                if self._drop_reaches_six_points(self.current_natural_rally_high, price):
                     # 判断是次级回撤还是自然回撤
                     # 使用自然回撤低点作为基准：跌破则自然回撤，否则次级回撤
                     if self.last_natural_reaction_low is None or price < self.last_natural_reaction_low:
@@ -635,10 +731,9 @@ class MarketStateAnalyzer:
                 self.natural_rally_high = price
                 return MarketState.NATURAL_RALLY
             
-            # 次级回升 → 次级回撤: 从最高点下降6个点(20%)，但没有跌破自然回撤低点
+            # 次级回升 → 次级回撤: 从最高点下降6个点，但没有跌破自然回撤低点
             if self.secondary_rally_high:
-                drop_pct = (self.secondary_rally_high - price) / self.secondary_rally_high
-                if drop_pct >= six_points:
+                if self._drop_reaches_six_points(self.secondary_rally_high, price):
                     if self.last_natural_reaction_low and price >= self.last_natural_reaction_low:
                         # 没有跌破自然回撤低点，是次级回撤
                         self.secondary_reaction_low = price
@@ -662,8 +757,7 @@ class MarketStateAnalyzer:
 
             # 次级回撤 → 次级回升: 相比次级回撤自身低点上升 SIX_POINTS
             if self.secondary_reaction_low:
-                rise_pct = (price - self.secondary_reaction_low) / self.secondary_reaction_low
-                if rise_pct >= six_points:
+                if self._rise_reaches_six_points(self.secondary_reaction_low, price):
                     # 使用历史上自然回升的最高点来判断是否突破
                     historical_rally_high = self.last_natural_rally_high
                     if historical_rally_high and price > historical_rally_high:
@@ -692,52 +786,6 @@ class MarketStateAnalyzer:
         else:
             return price  # 最低点
 
-    def _get_transition_ref_price(self, prev_state: MarketState, new_state: MarketState) -> float:
-        """获取状态转换的参考价格（用于计算转换时的价格变化）"""
-        # 上升趋势 → 自然回撤: 参考上升趋势最高点
-        if prev_state == MarketState.UP_TREND and new_state == MarketState.NATURAL_REACTION:
-            return self.last_up_trend_high if self.last_up_trend_high else self.current_segment.key_point
-
-        # 自然回撤 → 下降趋势: 使用记录的参考价格（可能是段落起点或下降趋势最低点）
-        elif prev_state == MarketState.NATURAL_REACTION and new_state == MarketState.DOWN_TREND:
-            if self.last_transition_ref_price:
-                ref = self.last_transition_ref_price
-                self.last_transition_ref_price = None  # 使用后清空
-                return ref
-            return self.current_segment.start_price
-
-        # 自然回撤 → 自然回升/次级回升: 参考自然回撤最低点
-        elif prev_state == MarketState.NATURAL_REACTION and new_state in [MarketState.NATURAL_RALLY, MarketState.SECONDARY_RALLY]:
-            return self.current_natural_reaction_low if self.current_natural_reaction_low else self.current_segment.start_price
-
-        # 自然回升 → 上升趋势: 使用记录的参考价格（可能是自然回升高点或上升趋势高点）
-        elif prev_state == MarketState.NATURAL_RALLY and new_state == MarketState.UP_TREND:
-            if self.last_transition_ref_price:
-                ref = self.last_transition_ref_price
-                self.last_transition_ref_price = None  # 使用后清空
-                return ref
-            return self.current_natural_rally_high if self.current_natural_rally_high else self.current_segment.start_price
-
-        # 自然回升 → 自然回撤/次级回撤: 参考自然回升高点
-        elif prev_state == MarketState.NATURAL_RALLY and new_state in [MarketState.NATURAL_REACTION, MarketState.SECONDARY_REACTION]:
-            return self.current_natural_rally_high if self.current_natural_rally_high else self.current_segment.start_price
-
-        # 下降趋势 → 自然回升: 参考下降趋势最低点
-        elif prev_state == MarketState.DOWN_TREND and new_state == MarketState.NATURAL_RALLY:
-            return self.last_down_trend_low if self.last_down_trend_low else self.current_segment.start_price
-
-        # 次级回升 → 自然回升: 参考次级回升突破的历史自然回升高点
-        elif prev_state == MarketState.SECONDARY_RALLY and new_state == MarketState.NATURAL_RALLY:
-            return self.last_natural_rally_high if self.last_natural_rally_high else self.current_segment.start_price
-
-        # 次级回撤 → 自然回撤: 参考次级回撤跌破的历史自然回撤低点
-        elif prev_state == MarketState.SECONDARY_REACTION and new_state == MarketState.NATURAL_REACTION:
-            return self.last_natural_reaction_low if self.last_natural_reaction_low else self.current_segment.start_price
-
-        # 默认使用当前段落的关键点
-        else:
-            return self.current_segment.key_point if self.current_segment else 0
-    
     def _update_key_point(self, price: float):
         """更新当前段落的关键点"""
         if not self.current_segment:
@@ -772,67 +820,29 @@ class MarketStateAnalyzer:
                 if self.secondary_reaction_low is None or price < self.secondary_reaction_low:
                     self.secondary_reaction_low = price
     
-    def _check_downtrend_end_flags(self, price: float, date_str: str):
+    def _check_downtrend_end_flags(self, price: float, date_str: str, previous_down_trend_low: Optional[float] = None):
         """检测下降阶段结束标志（在下降趋势结束时调用）
         
-        下降阶段结束标志：下降趋势未突破前低，从本轮下降趋势低点反弹3点及以上
-        
-        判定条件：
-        1. 未突破前低：本轮低点 >= 上一轮下降趋势的低点
-        2. 从本轮低点反弹3点及以上（使用下降趋势结束时的价格计算）
+        下降阶段结束标志：下降趋势未突破前低，从本轮下降趋势低点反弹3点及以上。
+        previous_down_trend_low 必须是进入本轮下降趋势之前保存的上一轮低点。
         """
-        three_points = self._get_three_points(price)
-        
-        # 检测下降阶段结束标志（在下降趋势结束时）
         if self.downtrend_end_flag_active:
-            # 使用记录的低点（在下降趋势过程中已更新）
-            if self.downtrend_end_flag_low is not None and self.last_down_trend_low is not None:
-                # 检查是否未突破前低（上一轮下降趋势的低点）
-                if self.downtrend_end_flag_low >= self.last_down_trend_low:
-                    # 从本轮低点反弹3点及以上（转换为百分比比较）
-                    # 注意：使用当前价格（状态转换时的价格）计算反弹幅度
-                    rebound_pct = (price - self.downtrend_end_flag_low) / self.downtrend_end_flag_low
-                    if rebound_pct >= three_points and not self.downtrend_end_flag_triggered:
+            if self.downtrend_end_flag_low is not None and previous_down_trend_low is not None:
+                if self.downtrend_end_flag_low >= previous_down_trend_low:
+                    if self._rise_reaches_three_points(self.downtrend_end_flag_low, price) and not self.downtrend_end_flag_triggered:
                         self.downtrend_end_flag_triggered = True
     
-    def _check_uptrend_end_flag(self, price: float, date_str: str, dif: Optional[float] = None, dif_high: Optional[float] = None):
-        """检测上升阶段结束标志（在上升趋势中调用，但只在特定条件下触发）
+    def _check_uptrend_end_flag(self, price: float, date_str: str, previous_up_trend_high: Optional[float] = None):
+        """检测上升阶段结束标志（在上升趋势结束时调用）
         
-        上升阶段结束标志：上升趋势未突破前高，从本轮高点回落3点及以上
-        
-        判定条件：
-        1. 未突破前高：本轮高点 <= 上一轮上升趋势的高点
-        2. 价格低于上升趋势起始价格：当前价格 < 本轮上升趋势的起始价格
-        3. 从本轮高点回落3点及以上
-        4. DIF条件：如果DIF为正且没有从高变低下降超过阈值(0.05)，则不认定上升阶段结束
+        上升阶段结束标志：上升趋势未突破前高，从本轮高点回落3点及以上。
+        previous_up_trend_high 必须是进入本轮上升趋势之前保存的上一轮高点。
         """
-        three_points = self._get_three_points(price)
-        DIF_DROP_THRESHOLD = 0.05  # DIF从高变低的下降阈值
-        
-        # 检测上升阶段结束标志（在上升趋势中）
         if self.uptrend_end_flag_active:
-            # 使用记录的高点（在上升趋势过程中已更新）
-            if self.uptrend_end_flag_high is not None and self.last_up_trend_high is not None:
-                # 检查是否未突破前高（上一轮上升趋势的高点）
-                if self.uptrend_end_flag_high <= self.last_up_trend_high:
-                    # 新增条件：当前价格必须低于本轮上升趋势的起始价格
-                    # 这样才能确保是真正的"上升阶段结束"，而不是还没涨到前高
-                    uptrend_start_price = self.current_segment.start_price if self.current_segment else None
-                    if uptrend_start_price is not None and price < uptrend_start_price:
-                        # 从本轮高点回落3点及以上（转换为百分比比较）
-                        pullback_pct = (self.uptrend_end_flag_high - price) / self.uptrend_end_flag_high
-                        if pullback_pct >= three_points and not self.uptrend_end_flag_triggered:
-                            # DIF条件判断
-                            if dif is not None and dif_high is not None:
-                                if dif > 0 and (dif_high - dif) < DIF_DROP_THRESHOLD:
-                                    # DIF条件满足，不触发上升阶段结束
-                                    pass
-                                else:
-                                    # DIF条件不满足，触发上升阶段结束
-                                    self.uptrend_end_flag_triggered = True
-                            else:
-                                # 没有DIF数据，按原有逻辑触发
-                                self.uptrend_end_flag_triggered = True
+            if self.uptrend_end_flag_high is not None and previous_up_trend_high is not None:
+                if self.uptrend_end_flag_high <= previous_up_trend_high:
+                    if self._drop_reaches_three_points(self.uptrend_end_flag_high, price) and not self.uptrend_end_flag_triggered:
+                        self.uptrend_end_flag_triggered = True
     
     def _get_ref_key_point(self) -> Optional[float]:
         """获取参考关键点
