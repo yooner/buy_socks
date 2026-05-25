@@ -48,6 +48,7 @@ DOWN_TREND_LINE_CONFIG.update({
     'min_pullback_pct': 5.0,         # 高点后至少回落幅度，用于延迟确认高点
     'min_high_gap_days': 8,          # 两个高点太近时只保留更高/更强的一个
     'min_high_decline_pct': 0.5,     # 第二个高点必须比第一个高点降低
+    'max_intermediate_high_distance_pct': 5.0,  # 中间高点离压力线太远时，不认为是有效趋势线
     'break_confirm_days': 1,         # 下降压力线保持单日上破确认
     'min_active_line_days': 0,       # 刚确认就上破也显示，不用存活天数过滤
     'allow_negative_slope': True,
@@ -659,7 +660,7 @@ def _finish_realtime_line(line, draw_end_idx, broken, dates, prices, config):
         },
         'angle': round(line['angle'], 2),
         'duration_days': draw_end_idx - line['active']['index'],
-        'touch_marks': _collect_touch_marks(line, dates, prices, draw_end_idx, config),
+        'touch_marks': _collect_touch_marks(line, dates, prices, draw_end_idx, config, mark_start_idx=line['start']['index']),
         'broken': broken,
         'break': break_info,
         'realtime': True,
@@ -807,6 +808,25 @@ def _build_downtrend_line(high1, high2, check_idx, dates, prices, config):
     return line
 
 
+def _downtrend_intermediate_highs_are_aligned(line, available_highs, config):
+    start_idx = line['start']['index']
+    end_idx = line['end']['index']
+    max_distance_pct = config.get('max_intermediate_high_distance_pct', 5.0)
+    intermediate_highs = [
+        high for high in available_highs
+        if start_idx < high['index'] < end_idx
+    ]
+    if not intermediate_highs:
+        return True
+
+    for high in intermediate_highs:
+        line_price = _line_price(start_idx, line['start']['price'], line['slope'], high['index'])
+        distance_pct = abs(high['price'] - line_price) / line_price * 100 if line_price else 0
+        if distance_pct > max_distance_pct:
+            return False
+    return True
+
+
 def _select_downtrend_line(confirmed_highs, check_idx, dates, prices, config, used_pairs, used_end_indices=None):
     candidates = []
     used_end_indices = used_end_indices or set()
@@ -823,7 +843,7 @@ def _select_downtrend_line(confirmed_highs, check_idx, dates, prices, config, us
             if pair_key in used_pairs:
                 continue
             line = _build_downtrend_line(high1, high2, check_idx, dates, prices, config)
-            if line is not None:
+            if line is not None and _downtrend_intermediate_highs_are_aligned(line, available_highs, config):
                 candidates.append(line)
 
     if not candidates:
@@ -852,7 +872,7 @@ def _finish_downtrend_line(line, draw_end_idx, broken, dates, prices, config):
         },
         'angle': round(line['angle'], 2),
         'duration_days': draw_end_idx - line['active']['index'],
-        'touch_marks': _collect_touch_marks(line, dates, prices, draw_end_idx, config),
+        'touch_marks': _collect_touch_marks(line, dates, prices, draw_end_idx, config, mark_start_idx=line['start']['index']),
         'broken': broken,
         'break': break_info,
         'realtime': True,
@@ -948,8 +968,125 @@ def build_trend_analysis(dates, prices, market_states):
     return lows, up_lines, highs, down_lines
 
 
+HEAD_SHOULDER_CONFIG = {
+    'shoulder_tolerance_pct': 12.0,
+    'min_head_above_shoulder_pct': 8.0,
+    'min_peak_gap_days': 8,
+    'break_tolerance_pct': 1.0,
+    'max_patterns': 12,
+}
+
+
+def _min_price_point(dates, prices, start_idx, end_idx):
+    if start_idx > end_idx:
+        return None
+    min_idx = start_idx
+    min_price = prices[start_idx]
+    for idx in range(start_idx, end_idx + 1):
+        if prices[idx] < min_price:
+            min_idx = idx
+            min_price = prices[idx]
+    return {'index': min_idx, 'date': dates[min_idx], 'price': round(min_price, 2)}
+
+
+def _neckline_price(left_valley, right_valley, idx):
+    days = right_valley['index'] - left_valley['index']
+    if days == 0:
+        return left_valley['price']
+    slope = (right_valley['price'] - left_valley['price']) / days
+    return left_valley['price'] + slope * (idx - left_valley['index'])
+
+
+def detect_head_shoulders(dates, prices, highs, config=None):
+    config = config or HEAD_SHOULDER_CONFIG
+    patterns = []
+    if len(highs) < 3:
+        return patterns
+
+    shoulder_tolerance_pct = config.get('shoulder_tolerance_pct', 12.0)
+    min_head_above_pct = config.get('min_head_above_shoulder_pct', 8.0)
+    min_gap = config.get('min_peak_gap_days', 8)
+    break_tolerance_pct = config.get('break_tolerance_pct', 1.0)
+    max_patterns = max(1, int(config.get('max_patterns', 12)))
+    sorted_highs = sorted(highs, key=lambda x: x['index'])
+    used_break_indices = set()
+
+    for i in range(len(sorted_highs) - 2):
+        left = sorted_highs[i]
+        for j in range(i + 1, len(sorted_highs) - 1):
+            head = sorted_highs[j]
+            if head['index'] - left['index'] < min_gap:
+                continue
+            for k in range(j + 1, len(sorted_highs)):
+                right = sorted_highs[k]
+                if right['index'] - head['index'] < min_gap:
+                    continue
+                shoulder_avg = (left['price'] + right['price']) / 2
+                if shoulder_avg <= 0:
+                    continue
+                shoulder_diff_pct = abs(left['price'] - right['price']) / shoulder_avg * 100
+                if shoulder_diff_pct > shoulder_tolerance_pct:
+                    continue
+                head_above_pct = (head['price'] - max(left['price'], right['price'])) / max(left['price'], right['price']) * 100
+                if head_above_pct < min_head_above_pct:
+                    continue
+
+                left_valley = _min_price_point(dates, prices, left['index'], head['index'])
+                right_valley = _min_price_point(dates, prices, head['index'], right['index'])
+                if not left_valley or not right_valley or left_valley['index'] == right_valley['index']:
+                    continue
+
+                head_neck_price = _neckline_price(left_valley, right_valley, head['index'])
+                measure = head['price'] - head_neck_price
+                if measure <= 0:
+                    continue
+
+                break_info = None
+                for idx in range(right['index'] + 1, len(prices)):
+                    line_price = _neckline_price(left_valley, right_valley, idx)
+                    if prices[idx] < line_price * (1 - break_tolerance_pct / 100):
+                        if idx in used_break_indices:
+                            break
+                        target_price = line_price - measure
+                        break_info = {
+                            'index': idx,
+                            'date': dates[idx],
+                            'price': round(prices[idx], 2),
+                            'line_price': round(line_price, 2),
+                            'target_price': round(target_price, 2),
+                        }
+                        used_break_indices.add(idx)
+                        break
+                if not break_info:
+                    continue
+
+                draw_end_idx = min(len(prices) - 1, break_info['index'] + 30)
+                draw_end_price = _neckline_price(left_valley, right_valley, draw_end_idx)
+                pattern = {
+                    'left_shoulder': left,
+                    'head': head,
+                    'right_shoulder': right,
+                    'left_valley': left_valley,
+                    'right_valley': right_valley,
+                    'draw_end': {'index': draw_end_idx, 'date': dates[draw_end_idx], 'price': round(draw_end_price, 2)},
+                    'measure': round(measure, 2),
+                    'break': break_info,
+                    'score': round(head_above_pct * 2 - shoulder_diff_pct + (right['index'] - left['index']) * 0.03, 2),
+                }
+                patterns.append(pattern)
+                break
+            if len(patterns) >= max_patterns:
+                break
+        if len(patterns) >= max_patterns:
+            break
+
+    patterns.sort(key=lambda x: (x['break']['index'], -x['score']))
+    return patterns[:max_patterns]
+
+
 def calculate_trend_break_markers(dates, prices, market_states):
-    _, up_lines, _, down_lines = build_trend_analysis(dates, prices, market_states)
+    _, up_lines, highs, down_lines = build_trend_analysis(dates, prices, market_states)
+    head_shoulders = detect_head_shoulders(dates, prices, highs, HEAD_SHOULDER_CONFIG)
     markers = {}
 
     for line in up_lines:
@@ -966,6 +1103,19 @@ def calculate_trend_break_markers(dates, prices, market_states):
         if not break_info:
             continue
         marker = f"下降趋势线上破@{break_info['price']:.2f}/线{break_info['line_price']:.2f}"
+        date_markers = markers.setdefault(break_info['date'], [])
+        if marker not in date_markers:
+            date_markers.append(marker)
+
+    for pattern in head_shoulders:
+        break_info = pattern.get('break')
+        if not break_info:
+            continue
+        marker = (
+            f"头肩颈线跌破@{break_info['price']:.2f}"
+            f"/颈线{break_info['line_price']:.2f}"
+            f"/目标{break_info['target_price']:.2f}"
+        )
         date_markers = markers.setdefault(break_info['date'], [])
         if marker not in date_markers:
             date_markers.append(marker)
@@ -1000,7 +1150,7 @@ def annotate_output_file_with_trend_breaks(filepath='out_put.txt'):
         f.write('\n'.join(annotated_lines))
     return markers
 
-def generate_standalone_html(dates, prices, market_states, buy_points, sell_points, output_path, lows=None, trend_lines=None, highs=None, down_trend_lines=None):
+def generate_standalone_html(dates, prices, market_states, buy_points, sell_points, output_path, lows=None, trend_lines=None, highs=None, down_trend_lines=None, head_shoulders=None):
     # 读取echarts库文件
     try:
         with open('echarts.min.js', 'r', encoding='utf-8') as f:
@@ -1012,7 +1162,7 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
     # 生成市场状态区域
     state_areas = generate_market_state_areas(dates, market_states)
     
-    # 识别上升趋势低点/支撑线，以及下降趋势高点/压力线
+    # 识别上升趋势低点/支撑线、下降趋势高点/压力线，以及头肩顶颈线
     if lows is None or trend_lines is None or highs is None or down_trend_lines is None:
         calc_lows, calc_trend_lines, calc_highs, calc_down_trend_lines = build_trend_analysis(dates, prices, market_states)
         if lows is None:
@@ -1023,6 +1173,8 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
             highs = calc_highs
         if down_trend_lines is None:
             down_trend_lines = calc_down_trend_lines
+    if head_shoulders is None:
+        head_shoulders = detect_head_shoulders(dates, prices, highs, HEAD_SHOULDER_CONFIG)
     
     buy_data_json = json.dumps(buy_points, ensure_ascii=False)
     sell_data_json = json.dumps(sell_points, ensure_ascii=False)
@@ -1035,6 +1187,7 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
     trend_lines_json = json.dumps(trend_lines, ensure_ascii=False)
     highs_json = json.dumps(highs, ensure_ascii=False)
     down_trend_lines_json = json.dumps(down_trend_lines, ensure_ascii=False)
+    head_shoulders_json = json.dumps(head_shoulders, ensure_ascii=False)
     
     # 如果echarts代码存在，内嵌它；否则使用CDN
     if echarts_code:
@@ -1072,6 +1225,12 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
         .state-legend {{ display: flex; justify-content: center; gap: 15px; padding: 10px; background: #fff; border-bottom: 1px solid #e9ecef; flex-wrap: wrap; }}
         .state-legend-item {{ display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666; }}
         .state-legend-color {{ width: 20px; height: 12px; border-radius: 2px; }}
+        .manual-tools {{ display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #f8f9fa; border-bottom: 1px solid #e9ecef; flex-wrap: wrap; }}
+        .manual-tools select {{ border: 1px solid #ced4da; background: #fff; color: #343a40; border-radius: 6px; padding: 6px 10px; font-size: 12px; }}
+        .manual-tools button {{ border: 1px solid #ced4da; background: #fff; color: #343a40; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }}
+        .manual-tools button.active {{ background: #2f80ed; border-color: #2f80ed; color: #fff; }}
+        .manual-tools button:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+        .manual-status {{ color: #495057; font-size: 12px; min-width: 260px; }}
         #chart {{ width: 100%; height: 650px; padding: 15px; }}
     </style>
 </head>
@@ -1094,6 +1253,11 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
         <div class="state-legend">
             {state_legend_html}
         </div>
+        <div class="manual-tools">
+            <button id="manualDrawBtn" type="button">手动画线</button>
+            <select id="manualLineMode"><option value="trend">趋势线</option><option value="neckline">颈线</option></select>
+            <span id="manualDrawStatus" class="manual-status">点击“手动画线”后，在图上按住拖动划线，松开后自动向右延长</span>
+        </div>
         <div id="chart"></div>
     </div>
     <script>
@@ -1108,6 +1272,7 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
         const trendLines = {trend_lines_json};
         const downtrendHighs = {highs_json};
         const downTrendLines = {down_trend_lines_json};
+        const headShoulders = {head_shoulders_json};
         
         // 生成 markArea 数据
         const markAreaData = stateAreas.map(area => ({{
@@ -1156,12 +1321,16 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
 
         function createTrendLineSeries(lines, options) {{
             return lines.map((line, idx) => {{
-                const activePoint = line.active || line.end;
+                const anchorPoint = line.end;
+                const activePoint = line.active || anchorPoint;
                 const endPoint = line.draw_end || activePoint;
                 const realtimeData = [
-                    [activePoint.date, activePoint.price],
-                    [endPoint.date, endPoint.price]
+                    [line.start.date, line.start.price],
+                    [anchorPoint.date, anchorPoint.price]
                 ];
+                if (endPoint.date !== anchorPoint.date) {{
+                    realtimeData.push([endPoint.date, endPoint.price]);
+                }}
 
                 const touchMarks = (line.touch_marks || []).map(t => ({{
                     coord: [t.date, t.line_price],
@@ -1257,6 +1426,34 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
             touchPosition: 'bottom',
             brokenStatus: '已上破'
         }});
+
+        function createHeadShoulderSeries(patterns) {{
+            return patterns.map((pattern, idx) => {{
+                const breakInfo = pattern.break;
+                const markData = [
+                    {{ coord: [pattern.left_shoulder.date, pattern.left_shoulder.price], value: '左肩', itemStyle: {{ color: '#6c5ce7' }}, label: {{ show: true, formatter: '左肩', color: '#6c5ce7', fontSize: 10, fontWeight: 'bold', position: 'top' }}, symbol: 'triangle', symbolSize: 12 }},
+                    {{ coord: [pattern.head.date, pattern.head.price], value: '头', itemStyle: {{ color: '#d63031' }}, label: {{ show: true, formatter: '头', color: '#d63031', fontSize: 10, fontWeight: 'bold', position: 'top' }}, symbol: 'triangle', symbolSize: 14 }},
+                    {{ coord: [pattern.right_shoulder.date, pattern.right_shoulder.price], value: '右肩', itemStyle: {{ color: '#6c5ce7' }}, label: {{ show: true, formatter: '右肩', color: '#6c5ce7', fontSize: 10, fontWeight: 'bold', position: 'top' }}, symbol: 'triangle', symbolSize: 12 }},
+                    {{ coord: [breakInfo.date, breakInfo.line_price], value: '目标', itemStyle: {{ color: '#e17055' }}, label: {{ show: true, formatter: '跌破 ' + breakInfo.price.toFixed(2) + '\\n目标 ' + breakInfo.target_price.toFixed(2), color: '#e17055', fontSize: 10, fontWeight: 'bold', position: 'bottom' }}, symbol: 'pin', symbolSize: 58 }}
+                ];
+                return {{
+                    name: '头肩颈线',
+                    type: 'line',
+                    data: [
+                        [pattern.left_valley.date, pattern.left_valley.price],
+                        [pattern.right_valley.date, pattern.right_valley.price],
+                        [pattern.draw_end.date, pattern.draw_end.price]
+                    ],
+                    symbol: 'none',
+                    smooth: false,
+                    lineStyle: {{ color: '#e17055', width: 2.4, type: 'dotted' }},
+                    tooltip: {{ formatter: function() {{ return '头肩颈线' + (idx + 1) + '<br>头部: ' + pattern.head.date + ' @' + pattern.head.price.toFixed(2) + '<br>颈线跌破: ' + breakInfo.date + ' @' + breakInfo.price.toFixed(2) + '<br>量度跌幅: ' + pattern.measure.toFixed(2) + '<br>目标价: ' + breakInfo.target_price.toFixed(2); }} }},
+                    markPoint: {{ data: markData }}
+                }};
+            }});
+        }}
+
+        const headShoulderSeries = createHeadShoulderSeries(headShoulders);
         
         const chart = echarts.init(document.getElementById('chart'));
         const option = {{
@@ -1304,33 +1501,388 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
                 {{ type: 'inside', start: 0, end: 100 }}, 
                 {{ type: 'slider', start: 0, end: 100, height: 30, bottom: 50 }}
             ],
-            series: [
-                {{
-                    name: '收盘价',
+            series: []
+        }};
+
+        const baseSeries = [
+            {{
+                name: '收盘价',
+                type: 'line',
+                data: prices,
+                smooth: true,
+                symbol: 'none',
+                lineStyle: {{ color: '#5470c6', width: 2 }},
+                areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{offset: 0, color: 'rgba(84,112,198,0.3)'}}, {{offset: 1, color: 'rgba(84,112,198,0.05)'}}] }} }},
+                markPoint: {{ data: [...buyMarks, ...sellMarks, ...lowMarks, ...highMarks], symbol: 'pin', symbolSize: 45, label: {{ fontSize: 10 }} }},
+                markArea: {{
+                    silent: true,
+                    data: markAreaData.map(area => [{{
+                        xAxis: area.xAxis,
+                        itemStyle: area.itemStyle,
+                        label: area.label
+                    }}, {{
+                        xAxis: area.xAxisEnd
+                    }}])
+                }}
+            }},
+            ...upTrendLineSeries,
+            ...downTrendLineSeries,
+            ...headShoulderSeries
+        ];
+        const manualDrawBtn = document.getElementById('manualDrawBtn');
+        const manualLineMode = document.getElementById('manualLineMode');
+        const manualDrawStatus = document.getElementById('manualDrawStatus');
+        let manualDrawingEnabled = false;
+        let manualDragStart = null;
+        let manualDraftLine = null;
+        let manualLines = [];
+        let manualLineId = 1;
+        let selectedManualLineId = null;
+
+        function clampIndex(rawIdx) {{
+            if (typeof rawIdx === 'string') {{
+                const matchedIndex = dates.indexOf(rawIdx);
+                if (matchedIndex >= 0) {{
+                    return matchedIndex;
+                }}
+            }}
+            const numericIndex = Number(rawIdx);
+            if (!Number.isFinite(numericIndex)) {{
+                return 0;
+            }}
+            return Math.max(0, Math.min(dates.length - 1, Math.round(numericIndex)));
+        }}
+
+        function pixelToManualPoint(event) {{
+            const pixel = [event.offsetX, event.offsetY];
+            if (!chart.containPixel({{ gridIndex: 0 }}, pixel)) {{
+                return null;
+            }}
+            const coord = chart.convertFromPixel({{ gridIndex: 0 }}, pixel);
+            const idx = clampIndex(coord[0]);
+            const price = Number(coord[1]);
+            if (!Number.isFinite(price)) {{
+                return null;
+            }}
+            return {{ index: idx, date: dates[idx], price }};
+        }}
+
+        function linePriceAt(line, idx) {{
+            return line.start.price + line.slope * (idx - line.start.index);
+        }}
+
+        function findManualCross(line) {{
+            const scanStart = Math.max(line.start.index, line.end.index) + 1;
+            const direction = line.slope >= 0 ? 'up' : 'down';
+            for (let idx = scanStart; idx < prices.length; idx++) {{
+                const linePrice = linePriceAt(line, idx);
+                const prevLinePrice = linePriceAt(line, idx - 1);
+                const prevDiff = prices[idx - 1] - prevLinePrice;
+                const diff = prices[idx] - linePrice;
+                if (line.mode === 'neckline') {{
+                    if (prevDiff >= 0 && diff < 0) {{
+                        return {{ index: idx, date: dates[idx], price: prices[idx], linePrice, text: '跌破' }};
+                    }}
+                    continue;
+                }}
+                if (direction === 'up' && prevDiff >= 0 && diff < 0) {{
+                    return {{ index: idx, date: dates[idx], price: prices[idx], linePrice, text: '跌破' }};
+                }}
+                if (direction === 'down' && prevDiff <= 0 && diff > 0) {{
+                    return {{ index: idx, date: dates[idx], price: prices[idx], linePrice, text: '突破' }};
+                }}
+                if (prevDiff === 0 || diff === 0 || (prevDiff < 0 && diff > 0) || (prevDiff > 0 && diff < 0)) {{
+                    return {{ index: idx, date: dates[idx], price: prices[idx], linePrice, text: '交汇' }};
+                }}
+            }}
+            return null;
+        }}
+
+        function findManualHeadForNeckline(line) {{
+            const scanStart = Math.max(0, Math.min(line.start.index, line.end.index) - 120);
+            const scanEnd = Math.max(line.start.index, line.end.index);
+            let headIdx = scanStart;
+            let headPrice = prices[scanStart];
+            for (let idx = scanStart; idx <= scanEnd; idx++) {{
+                if (prices[idx] > headPrice) {{
+                    headIdx = idx;
+                    headPrice = prices[idx];
+                }}
+            }}
+            const neckAtHead = linePriceAt(line, headIdx);
+            const measure = Math.max(0, headPrice - neckAtHead);
+            return {{ index: headIdx, date: dates[headIdx], price: headPrice, neckPrice: neckAtHead, measure }};
+        }}
+
+        function buildManualLine(rawStart, rawEnd, preview = false) {{
+            if (!rawStart || !rawEnd || rawStart.index === rawEnd.index) {{
+                return null;
+            }}
+            const start = rawStart.index < rawEnd.index ? rawStart : rawEnd;
+            const end = rawStart.index < rawEnd.index ? rawEnd : rawStart;
+            const days = end.index - start.index;
+            const slope = (end.price - start.price) / days;
+            const angle = Math.atan((slope / Math.max(Math.abs(start.price), 0.01)) * 100 * 2.0) * 180 / Math.PI;
+            const mode = manualLineMode.value === 'neckline' ? 'neckline' : 'trend';
+            const line = {{
+                id: preview ? 0 : manualLineId++,
+                mode,
+                start,
+                end,
+                days,
+                slope,
+                angle,
+                direction: slope >= 0 ? 'up' : 'down',
+                breakPoint: null,
+                head: null,
+                targetPrice: null,
+                preview
+            }};
+            if (mode === 'neckline') {{
+                line.head = findManualHeadForNeckline(line);
+            }}
+            if (!preview) {{
+                line.breakPoint = findManualCross(line);
+                if (mode === 'neckline' && line.head) {{
+                    const targetBasePrice = line.breakPoint ? line.breakPoint.linePrice : linePriceAt(line, line.end.index);
+                    line.targetPrice = targetBasePrice - line.head.measure;
+                }}
+            }}
+            return line;
+        }}
+
+        function setManualPreviewGraphic(line) {{
+            if (!line) {{
+                chart.setOption({{ graphic: [{{ id: 'manualPreviewLine', $action: 'remove' }}] }});
+                return;
+            }}
+            const startPixel = chart.convertToPixel({{ gridIndex: 0 }}, [line.start.date, line.start.price]);
+            const endPixel = chart.convertToPixel({{ gridIndex: 0 }}, [line.end.date, line.end.price]);
+            chart.setOption({{
+                graphic: [{{
+                    id: 'manualPreviewLine',
                     type: 'line',
-                    data: prices,
-                    smooth: true,
-                    symbol: 'none',
-                    lineStyle: {{ color: '#5470c6', width: 2 }},
-                    areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{offset: 0, color: 'rgba(84,112,198,0.3)'}}, {{offset: 1, color: 'rgba(84,112,198,0.05)'}}] }} }},
-                    markPoint: {{ data: [...buyMarks, ...sellMarks, ...lowMarks, ...highMarks], symbol: 'pin', symbolSize: 45, label: {{ fontSize: 10 }} }},
-                    markArea: {{
-                        silent: true,
-                        data: markAreaData.map(area => [{{
-                            xAxis: area.xAxis,
-                            itemStyle: area.itemStyle,
-                            label: area.label
-                        }}, {{
-                            xAxis: area.xAxisEnd
-                        }}])
+                    shape: {{ x1: startPixel[0], y1: startPixel[1], x2: endPixel[0], y2: endPixel[1] }},
+                    style: {{ stroke: '#111827', lineWidth: 2, lineDash: [6, 4] }},
+                    silent: true,
+                    z: 100
+                }}]
+            }});
+        }}
+
+        function formatManualStatus() {{
+            if (manualDraftLine) {{
+                manualDrawStatus.textContent = (manualDraftLine.mode === 'neckline' ? '颈线' : '趋势线') + '拖动中：角度 ' + manualDraftLine.angle.toFixed(1) + '°，日斜率 ' + manualDraftLine.slope.toFixed(3);
+                return;
+            }}
+            if (selectedManualLineId !== null) {{
+                manualDrawStatus.textContent = '已选中手动画线' + selectedManualLineId + '，点击线旁 x 可删除';
+                return;
+            }}
+            if (manualDrawingEnabled) {{
+                manualDrawStatus.textContent = '画线中：当前模式 ' + (manualLineMode.value === 'neckline' ? '颈线' : '趋势线') + '，按住拖动后松开';
+                return;
+            }}
+            manualDrawStatus.textContent = '选择趋势线或颈线，点击“手动画线”后按住拖动划线';
+        }}
+
+        function updateManualButtons() {{
+            manualDrawBtn.classList.toggle('active', manualDrawingEnabled);
+            chart.getZr().setCursorStyle(manualDrawingEnabled ? 'crosshair' : 'default');
+            formatManualStatus();
+        }}
+
+        function manualLineToSeries(line) {{
+            const extendIdx = line.breakPoint ? line.breakPoint.index : dates.length - 1;
+            const extendPrice = linePriceAt(line, extendIdx);
+            const isSelected = selectedManualLineId === line.id;
+            const lineColor = isSelected ? '#d63031' : (line.mode === 'neckline' ? '#e17055' : '#f59f00');
+            const markData = [
+                {{
+                    coord: [line.start.date, line.start.price],
+                    value: '起点',
+                    itemStyle: {{ color: lineColor }},
+                    label: {{ show: true, formatter: line.start.price.toFixed(2), color: lineColor, fontSize: 10, position: 'top' }},
+                    symbol: 'circle',
+                    symbolSize: 10
+                }},
+                {{
+                    coord: [line.end.date, line.end.price],
+                    value: '斜率',
+                    itemStyle: {{ color: lineColor }},
+                    label: {{ show: true, formatter: (line.mode === 'neckline' ? '颈线' : '角度 ' + line.angle.toFixed(1) + '°') + '\\n日斜率 ' + line.slope.toFixed(3), color: lineColor, fontSize: 10, fontWeight: 'bold', position: 'top' }},
+                    symbol: 'diamond',
+                    symbolSize: 14
+                }}
+            ];
+            if (isSelected) {{
+                const deleteIdx = Math.round((line.end.index + (line.breakPoint ? line.breakPoint.index : Math.min(dates.length - 1, line.end.index + 12))) / 2);
+                markData.push({{
+                    coord: [dates[deleteIdx], linePriceAt(line, deleteIdx)],
+                    value: 'delete',
+                    itemStyle: {{ color: '#2d3436' }},
+                    label: {{ show: true, formatter: 'x', color: '#fff', fontSize: 13, fontWeight: 'bold' }},
+                    symbol: 'circle',
+                    symbolSize: 22,
+                    manualDeleteLineId: line.id
+                }});
+            }}
+            if (line.mode === 'neckline' && line.head) {{
+                markData.push({{
+                    coord: [line.head.date, line.head.price],
+                    value: '头部',
+                    itemStyle: {{ color: '#d63031' }},
+                    label: {{ show: true, formatter: '头部 ' + line.head.price.toFixed(2), color: '#d63031', fontSize: 10, fontWeight: 'bold', position: 'top' }},
+                    symbol: 'triangle',
+                    symbolSize: 14
+                }});
+            }}
+            if (line.breakPoint) {{
+                const isNeckline = line.mode === 'neckline';
+                const markerText = isNeckline && line.targetPrice !== null
+                    ? '跌破 ' + line.breakPoint.price.toFixed(2) + '\\n目标 ' + line.targetPrice.toFixed(2)
+                    : line.breakPoint.text + ' ' + line.breakPoint.price.toFixed(2);
+                markData.push({{
+                    coord: [line.breakPoint.date, line.breakPoint.linePrice],
+                    value: line.breakPoint.text,
+                    itemStyle: {{ color: isNeckline ? '#e17055' : (line.direction === 'up' ? '#d63031' : '#0984e3') }},
+                    label: {{
+                        show: true,
+                        formatter: markerText,
+                        color: isNeckline ? '#e17055' : (line.direction === 'up' ? '#d63031' : '#0984e3'),
+                        fontSize: 10,
+                        fontWeight: 'bold',
+                        position: line.direction === 'up' || isNeckline ? 'bottom' : 'top'
+                    }},
+                    symbol: 'pin',
+                    symbolSize: isNeckline ? 58 : 48
+                }});
+            }}
+            if (line.mode === 'neckline' && line.targetPrice !== null && !line.breakPoint) {{
+                markData.push({{
+                    coord: [line.end.date, line.end.price],
+                    value: '目标',
+                    itemStyle: {{ color: '#e17055' }},
+                    label: {{ show: true, formatter: '目标 ' + line.targetPrice.toFixed(2), color: '#e17055', fontSize: 10, fontWeight: 'bold', position: 'bottom' }},
+                    symbol: 'pin',
+                    symbolSize: 52
+                }});
+            }}
+            return {{
+                name: line.mode === 'neckline' ? '手画颈线' : '手动画线',
+                manualLineId: line.id,
+                type: 'line',
+                data: [
+                    [line.start.date, line.start.price],
+                    [line.end.date, line.end.price],
+                    [dates[extendIdx], extendPrice]
+                ],
+                symbol: 'none',
+                smooth: false,
+                z: 20,
+                lineStyle: {{ color: lineColor, width: isSelected ? 4 : 2.8, type: 'solid' }},
+                tooltip: {{
+                    formatter: function() {{
+                        const crossText = line.breakPoint ? '<br>' + line.breakPoint.text + ': ' + line.breakPoint.date + ' @' + line.breakPoint.price.toFixed(2) + '<br>线价: ' + line.breakPoint.linePrice.toFixed(2) : '<br>后续暂无交汇';
+                        const targetText = line.mode === 'neckline' && line.head ? '<br>头部: ' + line.head.date + ' @' + line.head.price.toFixed(2) + '<br>量度跌幅: ' + line.head.measure.toFixed(2) + (line.targetPrice !== null ? '<br>目标价: ' + line.targetPrice.toFixed(2) : '') : '';
+                        return (line.mode === 'neckline' ? '手画颈线' : '手动画线') + line.id + '<br>起点: ' + line.start.date + ' @' + line.start.price.toFixed(2) + '<br>终点: ' + line.end.date + ' @' + line.end.price.toFixed(2) + '<br>角度: ' + line.angle.toFixed(1) + '°<br>日斜率: ' + line.slope.toFixed(3) + crossText + targetText;
                     }}
                 }},
-                ...upTrendLineSeries,
-                ...downTrendLineSeries
-            ]
-        }};
+                markPoint: {{ data: markData }}
+            }};
+        }}
+
+        function makeManualSeries() {{
+            return manualLines.map(manualLineToSeries);
+        }}
+
+        function refreshManualSeries() {{
+            chart.setOption({{ series: [...baseSeries, ...makeManualSeries()] }}, {{ replaceMerge: ['series'] }});
+        }}
+
+        function startManualDrag(event) {{
+            if (!manualDrawingEnabled) {{
+                return;
+            }}
+            const point = pixelToManualPoint(event);
+            if (!point) {{
+                return;
+            }}
+            manualDragStart = point;
+            manualDraftLine = null;
+            setManualPreviewGraphic(null);
+            event.event && event.event.preventDefault && event.event.preventDefault();
+        }}
+
+        function updateManualDrag(event) {{
+            if (!manualDrawingEnabled || !manualDragStart) {{
+                return;
+            }}
+            const point = pixelToManualPoint(event);
+            if (!point) {{
+                return;
+            }}
+            manualDraftLine = buildManualLine(manualDragStart, point, true);
+            setManualPreviewGraphic(manualDraftLine);
+            formatManualStatus();
+        }}
+
+        function finishManualDrag(event) {{
+            if (!manualDrawingEnabled || !manualDragStart) {{
+                return;
+            }}
+            const point = pixelToManualPoint(event);
+            const line = buildManualLine(manualDragStart, point, false);
+            if (line) {{
+                manualLines.push(line);
+                selectedManualLineId = line.id;
+            }}
+            manualDragStart = null;
+            manualDraftLine = null;
+            setManualPreviewGraphic(null);
+            updateManualButtons();
+            refreshManualSeries();
+        }}
+
+        manualDrawBtn.addEventListener('click', () => {{
+            manualDrawingEnabled = !manualDrawingEnabled;
+            manualDragStart = null;
+            manualDraftLine = null;
+            selectedManualLineId = null;
+            setManualPreviewGraphic(null);
+            updateManualButtons();
+            refreshManualSeries();
+        }});
+        manualLineMode.addEventListener('change', updateManualButtons);
+        chart.on('click', function(params) {{
+            if (params.componentType === 'series' && (params.seriesName === '手动画线' || params.seriesName === '手画颈线')) {{
+                const deleteId = params.data && params.data.manualDeleteLineId ? params.data.manualDeleteLineId : null;
+                if (deleteId !== null) {{
+                    manualLines = manualLines.filter(line => line.id !== deleteId);
+                    selectedManualLineId = null;
+                }} else {{
+                    selectedManualLineId = params.seriesOption && params.seriesOption.manualLineId ? params.seriesOption.manualLineId : null;
+                }}
+                updateManualButtons();
+                refreshManualSeries();
+            }}
+        }});
+        chart.getZr().on('mousedown', startManualDrag);
+        chart.getZr().on('mousemove', updateManualDrag);
+        chart.getZr().on('mouseup', finishManualDrag);
+        chart.getZr().on('globalout', () => {{
+            manualDragStart = null;
+            manualDraftLine = null;
+            setManualPreviewGraphic(null);
+            updateManualButtons();
+        }});
+        option.series = [...baseSeries, ...makeManualSeries()];
         chart.setOption(option);
-        window.addEventListener('resize', () => chart.resize());
+        updateManualButtons();
+        window.addEventListener('resize', () => {{
+            chart.resize();
+            setManualPreviewGraphic(manualDraftLine);
+        }});
     </script>
 </body>
 </html>'''
@@ -1343,6 +1895,7 @@ def generate_standalone_html(dates, prices, market_states, buy_points, sell_poin
     print(f'市场状态段数: {len(state_areas)}')
     print(f'上升趋势低点数: {len(lows)}, 上升趋势线数: {len(trend_lines)}')
     print(f'下降趋势高点数: {len(highs)}, 下降趋势线数: {len(down_trend_lines)}')
+    print(f'头肩顶颈线数: {len(head_shoulders)}')
 
 def main():
     """主函数"""
