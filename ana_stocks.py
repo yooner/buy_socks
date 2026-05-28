@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "603496"
+STOCK_CODE = "601138"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
@@ -35,7 +35,7 @@ BACKTEST_END_DATE = pd.to_datetime("20260514")   # 回测结束日期
 
 # 
 
-TS_TOKEN = "357e7bb25c0bbc3f0d42b2981cbaac63ea797062ef921f469cd89090"
+TS_TOKEN = "0216d5f5acb8338a8a36b05b70257973fee68bb5aab4419da9586a29"
 if TS_TOKEN:
     ts.set_token(TS_TOKEN)
     pro = ts.pro_api()

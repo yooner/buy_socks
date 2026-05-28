@@ -823,14 +823,15 @@ class MarketStateAnalyzer:
     def _check_downtrend_end_flags(self, price: float, date_str: str, previous_down_trend_low: Optional[float] = None):
         """检测下降阶段结束标志（在下降趋势结束时调用）
         
-        下降阶段结束标志：下降趋势未突破前低，从本轮下降趋势低点反弹3点及以上。
-        previous_down_trend_low 必须是进入本轮下降趋势之前保存的上一轮低点。
+        下降阶段结束标志：低点反弹3点及以上则触发。
+        不再要求一定“未突破前低”，避免所有转折都被前低条件卡死。
+        如果后续需要再次过滤，可在上层交易条件里加上是否“下行破前低”的防护。
         """
-        if self.downtrend_end_flag_active:
-            if self.downtrend_end_flag_low is not None and previous_down_trend_low is not None:
-                if self.downtrend_end_flag_low >= previous_down_trend_low:
-                    if self._rise_reaches_three_points(self.downtrend_end_flag_low, price) and not self.downtrend_end_flag_triggered:
-                        self.downtrend_end_flag_triggered = True
+        if not self.downtrend_end_flag_active:
+            return
+        if self.downtrend_end_flag_low is not None:
+            if self._rise_reaches_three_points(self.downtrend_end_flag_low, price) and not self.downtrend_end_flag_triggered:
+                self.downtrend_end_flag_triggered = True
     
     def _check_uptrend_end_flag(self, price: float, date_str: str, previous_up_trend_high: Optional[float] = None):
         """检测上升阶段结束标志（在上升趋势结束时调用）

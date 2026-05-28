@@ -23,14 +23,16 @@ TREND_LINE_CONFIG = {
     'pivot_window': 3,               # 低点后最少等待交易日数，避免一天噪声
     'pivot_high_lookback': 60,       # 找前高时最多向前看的交易日数
     'pivot_rebound_lookahead': 60,   # 找低点后反弹时最多向后看的交易日数
-    'min_low_gap_days': 8,           # 两个低点太近时只保留更低/更强的一个
-    'min_low_rise_pct': 0.5,         # 第二个低点必须比第一个低点抬高
-    'min_slope_angle': 40,           # 实时趋势线最小斜率角度
-    'max_slope_angle': 60,           # 实时趋势线最大斜率角度
+    'min_low_gap_days': 1,           # 两个低点太近时只保留更低/更强的一个（已放宽为不限制）
+    'min_anchor_gap_days': 1,        # 两个锚点间隔最小交易日数（设为1，取消强约束）
+    'min_low_rise_pct': 0.0,         # 第二个低点允许与第一个持平/略高，增加可触发线的覆盖度
+    'min_slope_angle': 30,           # 实时趋势线最小斜率角度（上升线更易触发）
+    'max_slope_angle': 80,           # 实时趋势线最大斜率角度
     'target_slope_angle': 50,        # 排序时偏好的角度
     'price_scale': 2.0,              # 价格缩放因子，用于调整角度敏感度
-    'break_tolerance_pct': 0.8,      # 收盘价低于趋势线超过该比例，认为趋势线失效
-    'break_confirm_days': 3,        # 连续跌破多少个交易日才确认上升趋势线失效
+    'break_tolerance_pct': 0.6,      # 收盘价偏离趋势线超过该比例时，记入破位计数
+    'break_jump_pct': 5.0,           # 单日突破线超过该比例直接判定为破位（可按需设置）
+    'break_confirm_days': 2,         # 连续2个交易日偏离才确认趋势线失效
     'touch_tolerance_pct': 1.2,      # 价格贴近趋势线该比例以内，标为交汇/支撑点
     'min_touch_gap_days': 5,         # 交汇点标注之间最小间隔，减少标签重叠
     'max_touch_marks': 8,            # 单条趋势线最多显示的价格标注
@@ -44,14 +46,20 @@ TREND_LINE_CONFIG = {
 # 下降趋势高点趋势线配置：与上升趋势线相反，用两个逐步降低的高点画压力线
 DOWN_TREND_LINE_CONFIG = dict(TREND_LINE_CONFIG)
 DOWN_TREND_LINE_CONFIG.update({
-    'min_rise_pct': 5.0,             # 前低到高点至少反弹幅度
-    'min_pullback_pct': 5.0,         # 高点后至少回落幅度，用于延迟确认高点
-    'min_high_gap_days': 8,          # 两个高点太近时只保留更高/更强的一个
-    'min_high_decline_pct': 0.5,     # 第二个高点必须比第一个高点降低
-    'max_intermediate_high_distance_pct': 5.0,  # 中间高点离压力线太远时，不认为是有效趋势线
-    'break_confirm_days': 1,         # 下降压力线保持单日上破确认
-    'min_active_line_days': 0,       # 刚确认就上破也显示，不用存活天数过滤
+    'min_rise_pct': 4.0,              # 前低到高点至少反弹幅度
+    'min_pullback_pct': 4.0,          # 高点后至少回落幅度，用于延迟确认高点
+    'min_high_gap_days': 1,           # 两个高点太近时只保留更高/更强的一个（已放宽为不限制）
+    'min_anchor_gap_days': 1,        # 两个锚点间隔最小交易日数（设为1，取消强约束）
+    'min_high_decline_pct': 0.1,      # 第二个高点必须比第一个高点降低
+    'max_intermediate_high_distance_pct': 10.0,  # 中间高点离压力线太远时，不认为是有效趋势线
+    'break_confirm_days': 3,          # 下降压力线上破需连续3天才确认
+    'break_jump_pct': 5.0,          # 下跌压力线单日上破超过该比例则直接认定上破（可按需设置）
+    'min_active_line_days': 0,        # 刚确认就上破也显示，不用存活天数过滤
     'allow_negative_slope': True,
+    'min_slope_angle': 45,            # 下跌趋势线目标角度下限（负值）
+    'max_slope_angle': 60,            # 下跌趋势线目标角度上限（负值）
+    'target_slope_angle': 52,         # 下跌趋势线优先角度
+    'price_scale': 2.0,               # 与上升线对齐计算口径，便于同样方法下形成更多可用压力线
 })
 
 TREND_MARKER_RE = re.compile(r'\s+趋势破位:[^\s]+')
@@ -92,7 +100,7 @@ def _parse_output_lines(raw_lines):
             market_states.append(base_state)
 
             buy_match = re.search(
-                r'((?:上升确认买入|上升重启买入|买入|加仓)第\d+仓)@([\d.]+)(?:\s*x(\d+)股)?',
+                r'((?:上升确认买入|上升重启买入|上升趋势线站上买入|下降趋势线上破买入|买入|加仓))@([\d.]+)(?:\s*x(\d+)股)?',
                 line
             )
             if buy_match:
@@ -113,7 +121,7 @@ def _parse_output_lines(raw_lines):
                     })
 
             sell_match = re.search(
-                r'((?:上升结束清仓|清仓|止损卖出|卖出))@([\d.]+)\s+盈亏:([+-]?\d+(?:\.\d+)?)\(([+-]?[\d.]+)%\)',
+                r'((?:上升结束清仓|清仓|止损卖出|上升趋势线跌破卖出|卖出))@([\d.]+)\s+盈亏:([+-]?\d+(?:\.\d+)?)\(([+-]?[\d.]+)%\)',
                 line
             )
             if sell_match:
@@ -294,6 +302,43 @@ def find_uptrend_lows(dates, prices, market_states, config):
 
     return lows
 
+
+def _ensure_initial_up_low_anchor(dates, prices, market_states, lows):
+    """
+    为了让趋势线在数据序列起点也能尽快成形，用第一个价格点补齐“起始锚点”。
+    起始点仅用于连接后续已确认低点，不会替代原有真实低点。
+    """
+    if not dates or not prices:
+        return lows
+
+    if lows and lows[0].get('confirmed_index', lows[0]['index']) == 0:
+        return lows
+
+    anchor = {
+        'index': 0,
+        'date': dates[0],
+        'price': round(prices[0], 2),
+        'decline_pct': 0.0,
+        'rebound_pct': 0.0,
+        'state': market_states[0] if market_states else '',
+        'prev_high_index': 0,
+        'prev_high_date': dates[0],
+        'prev_high_price': round(prices[0], 2),
+        'confirmed_index': 0,
+        'confirmed_date': dates[0],
+        'confirmed_price': round(prices[0], 2),
+        'confirm_lag_days': 0,
+    }
+
+    sorted_lows = sorted(lows, key=lambda x: (x.get('confirmed_index', x['index']), x['index']))
+    for low in sorted_lows:
+        if low['index'] == 0:
+            return sorted_lows
+
+    sorted_lows.insert(0, anchor)
+    return sorted_lows
+
+
 def _merge_nearby_highs(highs, min_gap_days):
     if not highs:
         return []
@@ -450,9 +495,10 @@ def _first_break_index(line, dates, prices, market_states, valid_states, config)
     active_idx = line.get('active', line['end'])['index']
     tolerance_pct = config.get('break_tolerance_pct', 0.8)
 
+    direction = line.get('direction', 'up')
     for idx in range(active_idx + 1, len(prices)):
         line_price = _line_price(start_idx, start_price, slope, idx)
-        if prices[idx] < line_price * (1 - tolerance_pct / 100):
+        if _line_is_broken_by_price(direction, prices[idx], line_price, config)[0]:
             return idx
     return None
 
@@ -462,13 +508,13 @@ def _line_is_valid_before_activation(line, prices, market_states, valid_states, 
     active_idx = line['active']['index']
     start_price = line['start']['price']
     slope = line['slope']
-    tolerance_pct = config.get('break_tolerance_pct', 0.8)
+    direction = line.get('direction', 'up')
 
     for idx in range(start_idx + 1, active_idx + 1):
         if market_states[idx] not in valid_states:
             return False
         line_price = _line_price(start_idx, start_price, slope, idx)
-        if prices[idx] < line_price * (1 - tolerance_pct / 100):
+        if _line_is_broken_by_price(direction, prices[idx], line_price, config)[0]:
             return False
     return True
 
@@ -526,10 +572,22 @@ def _collect_touch_marks(line, dates, prices, draw_end_idx, config, mark_start_i
     return [first] + sampled + [last]
 
 
-def _line_is_broken_by_price(direction, price, line_price, tolerance_pct):
+def _line_is_broken_by_price(direction, price, line_price, config):
+    if line_price <= 0:
+        return False, False
+    tolerance_pct = config.get('break_tolerance_pct', 0.8)
+    jump_pct = config.get('break_jump_pct', 3.0)
     if direction == 'down':
-        return price > line_price * (1 + tolerance_pct / 100)
-    return price < line_price * (1 - tolerance_pct / 100)
+        break_pct = (price - line_price) / line_price * 100
+    else:
+        break_pct = (line_price - price) / line_price * 100
+
+    if break_pct <= 0:
+        return False, False
+
+    is_broken = break_pct >= tolerance_pct
+    is_jump_break = break_pct >= jump_pct
+    return is_broken, is_jump_break
 
 
 def _line_has_prior_break(line, check_idx, prices, config):
@@ -538,7 +596,6 @@ def _line_has_prior_break(line, check_idx, prices, config):
     start_price = line['start']['price']
     slope = line['slope']
     direction = line.get('direction', 'up')
-    tolerance_pct = config.get('break_tolerance_pct', 0.8)
     break_confirm_days = max(1, int(config.get('break_confirm_days', 1)))
     break_count = 0
 
@@ -546,8 +603,11 @@ def _line_has_prior_break(line, check_idx, prices, config):
         if idx == end_idx:
             continue
         line_price = _line_price(start_idx, start_price, slope, idx)
-        if _line_is_broken_by_price(direction, prices[idx], line_price, tolerance_pct):
+        is_broken, is_jump_break = _line_is_broken_by_price(direction, prices[idx], line_price, config)
+        if is_broken or is_jump_break:
             break_count += 1
+            if is_jump_break:
+                return True
             if break_count >= break_confirm_days:
                 return True
         else:
@@ -560,13 +620,14 @@ def _build_realtime_line(low1, low2, check_idx, dates, prices, config):
     anchor_days = end_idx - start_idx
     if anchor_days <= 0 or check_idx <= end_idx:
         return None
+    if anchor_days <= 0:
+        return None
 
     min_low_rise_pct = config.get('min_low_rise_pct', 0.5)
     min_angle = config['min_slope_angle']
     max_angle = config['max_slope_angle']
     target_angle = config.get('target_slope_angle', 50)
     price_scale = config.get('price_scale', 2.0)
-    break_tolerance_pct = config.get('break_tolerance_pct', 0.8)
     allow_negative = config.get('allow_negative_slope', False)
 
     confirmed_idx = low2.get('confirmed_index', end_idx)
@@ -583,7 +644,7 @@ def _build_realtime_line(low1, low2, check_idx, dates, prices, config):
 
     slope = (low2['price'] - low1['price']) / anchor_days
     active_price = _line_price(start_idx, low1['price'], slope, check_idx)
-    if prices[check_idx] < active_price * (1 - break_tolerance_pct / 100):
+    if _line_is_broken_by_price('up', prices[check_idx], active_price, config)[0]:
         return None
 
     active_distance_pct = abs(prices[check_idx] - active_price) / active_price * 100 if active_price else 0
@@ -615,16 +676,20 @@ def _build_realtime_line(low1, low2, check_idx, dates, prices, config):
     return line
 
 
-def _select_realtime_line(confirmed_lows, check_idx, dates, prices, config, used_pairs, used_end_indices=None):
+def _select_realtime_line(confirmed_lows, check_idx, dates, prices, config, used_pairs, used_end_indices=None, anchor_rearm=None):
     candidates = []
     used_end_indices = used_end_indices or set()
+    anchor_rearm = anchor_rearm or {}
     available_lows = [low for low in confirmed_lows if low.get('confirmed_index', low['index']) <= check_idx]
     if len(available_lows) < 2:
         return None
 
     for i in range(len(available_lows) - 1):
         low1 = available_lows[i]
+        rearm_from = anchor_rearm.get(low1["index"], 0)
         for low2 in available_lows[i + 1:]:
+            if low2.get("confirmed_index", low2["index"]) < rearm_from:
+                continue
             if low2['index'] in used_end_indices:
                 continue
             pair_key = (low1['index'], low2['index'])
@@ -683,7 +748,6 @@ def generate_trend_lines(lows, dates, prices, market_states, config):
     max_trend_lines = max(1, int(config.get('max_trend_lines', 50)))
     confirm_interval_days = max(1, int(config.get('confirm_interval_days', 5)))
     min_active_line_days = max(0, int(config.get('min_active_line_days', 10)))
-    break_tolerance_pct = config.get('break_tolerance_pct', 0.8)
     break_confirm_days = max(1, int(config.get('break_confirm_days', 1)))
     show_broken_lines = bool(config.get('show_broken_lines', True))
     confirmed_lows = sorted(lows, key=lambda x: (x.get('confirmed_index', x['index']), x['index']))
@@ -691,13 +755,17 @@ def generate_trend_lines(lows, dates, prices, market_states, config):
     active_lines = []
     used_pairs = set()
     used_end_indices = set()
+    anchor_rearm = {}
 
     for idx in range(len(prices)):
         if active_lines:
             still_active = []
             for line in active_lines:
                 line_price = _line_price(line['start']['index'], line['start']['price'], line['slope'], idx)
-                is_broken = idx > line['active']['index'] and _line_is_broken_by_price('up', prices[idx], line_price, break_tolerance_pct)
+                is_broken = False
+                is_jump_break = False
+                if idx > line['active']['index']:
+                    is_broken, is_jump_break = _line_is_broken_by_price('up', prices[idx], line_price, config)
                 if is_broken:
                     pending = line.setdefault('pending_break', {'count': 0})
                     pending['count'] += 1
@@ -705,7 +773,8 @@ def generate_trend_lines(lows, dates, prices, market_states, config):
                     pending.setdefault('first_date', dates[idx])
                     pending.setdefault('first_price', round(prices[idx], 2))
                     pending.setdefault('first_line_price', round(line_price, 2))
-                    if pending['count'] >= break_confirm_days:
+                    if is_jump_break or pending['count'] >= break_confirm_days:
+                        anchor_rearm[line["start"]["index"]] = idx
                         if idx - line['active']['index'] >= min_active_line_days and show_broken_lines:
                             trend_lines.append(_finish_realtime_line(line, idx, True, dates, prices, config))
                             if len(trend_lines) >= max_trend_lines:
@@ -730,7 +799,7 @@ def generate_trend_lines(lows, dates, prices, market_states, config):
             continue
 
         while len(trend_lines) + len(active_lines) < max_trend_lines:
-            candidate = _select_realtime_line(confirmed_lows, idx, dates, prices, config, used_pairs, used_end_indices)
+            candidate = _select_realtime_line(confirmed_lows, idx, dates, prices, config, used_pairs, used_end_indices, anchor_rearm)
             if candidate is None:
                 break
             active_lines.append(candidate)
@@ -754,29 +823,34 @@ def _build_downtrend_line(high1, high2, check_idx, dates, prices, config):
     anchor_days = end_idx - start_idx
     if anchor_days <= 0 or check_idx <= end_idx:
         return None
+    if anchor_days <= 0:
+        return None
 
     min_high_decline_pct = config.get('min_high_decline_pct', 0.5)
     min_angle = config['min_slope_angle']
     max_angle = config['max_slope_angle']
     target_angle = config.get('target_slope_angle', 50)
     price_scale = config.get('price_scale', 2.0)
-    break_tolerance_pct = config.get('break_tolerance_pct', 0.8)
+
 
     confirmed_idx = high2.get('confirmed_index', end_idx)
     if confirmed_idx > check_idx:
         return None
+    if not high1['price'] > high2['price']:
+        return None
     if high2['price'] >= high1['price'] * (1 - min_high_decline_pct / 100):
         return None
+    # 严格要求前高点必须高于后高点；只接受明显下降角度（负角，且在可用范围内）
 
     angle = calculate_slope_angle(high1['price'], high2['price'], anchor_days, price_scale)
-    if angle >= 0:
+    if angle >= -min_angle:
         return None
-    if not (min_angle <= abs(angle) <= max_angle):
+    if angle < -max_angle:
         return None
 
     slope = (high2['price'] - high1['price']) / anchor_days
     active_price = _line_price(start_idx, high1['price'], slope, check_idx)
-    if prices[check_idx] > active_price * (1 + break_tolerance_pct / 100):
+    if _line_is_broken_by_price('down', prices[check_idx], active_price, config)[0]:
         return None
 
     active_distance_pct = abs(prices[check_idx] - active_price) / active_price * 100 if active_price else 0
@@ -895,7 +969,6 @@ def generate_downtrend_lines(highs, dates, prices, market_states, config):
     max_trend_lines = max(1, int(config.get('max_trend_lines', 50)))
     confirm_interval_days = max(1, int(config.get('confirm_interval_days', 5)))
     min_active_line_days = max(0, int(config.get('min_active_line_days', 10)))
-    break_tolerance_pct = config.get('break_tolerance_pct', 0.8)
     break_confirm_days = max(1, int(config.get('break_confirm_days', 1)))
     show_broken_lines = bool(config.get('show_broken_lines', True))
     confirmed_highs = sorted(highs, key=lambda x: (x.get('confirmed_index', x['index']), x['index']))
@@ -903,13 +976,18 @@ def generate_downtrend_lines(highs, dates, prices, market_states, config):
     active_lines = []
     used_pairs = set()
     used_end_indices = set()
+    anchor_rearm = {}
+    anchor_rearm = {}
 
     for idx in range(len(prices)):
         if active_lines:
             still_active = []
             for line in active_lines:
                 line_price = _line_price(line['start']['index'], line['start']['price'], line['slope'], idx)
-                is_broken = idx > line['active']['index'] and _line_is_broken_by_price('down', prices[idx], line_price, break_tolerance_pct)
+                is_broken = False
+                is_jump_break = False
+                if idx > line['active']['index']:
+                    is_broken, is_jump_break = _line_is_broken_by_price('down', prices[idx], line_price, config)
                 if is_broken:
                     pending = line.setdefault('pending_break', {'count': 0})
                     pending['count'] += 1
@@ -917,7 +995,7 @@ def generate_downtrend_lines(highs, dates, prices, market_states, config):
                     pending.setdefault('first_date', dates[idx])
                     pending.setdefault('first_price', round(prices[idx], 2))
                     pending.setdefault('first_line_price', round(line_price, 2))
-                    if pending['count'] >= break_confirm_days:
+                    if is_jump_break or pending['count'] >= break_confirm_days:
                         if idx - line['active']['index'] >= min_active_line_days and show_broken_lines:
                             trend_lines.append(_finish_downtrend_line(line, idx, True, dates, prices, config))
                             if len(trend_lines) >= max_trend_lines:
@@ -962,6 +1040,7 @@ def generate_downtrend_lines(highs, dates, prices, market_states, config):
 
 def build_trend_analysis(dates, prices, market_states):
     lows = find_uptrend_lows(dates, prices, market_states, TREND_LINE_CONFIG)
+    lows = _ensure_initial_up_low_anchor(dates, prices, market_states, lows)
     up_lines = generate_trend_lines(lows, dates, prices, market_states, TREND_LINE_CONFIG)
     highs = find_downtrend_highs(dates, prices, market_states, DOWN_TREND_LINE_CONFIG)
     down_lines = generate_downtrend_lines(highs, dates, prices, market_states, DOWN_TREND_LINE_CONFIG)
@@ -1093,7 +1172,15 @@ def calculate_trend_break_markers(dates, prices, market_states):
         break_info = line.get('break')
         if not break_info:
             continue
-        marker = f"上升趋势线跌破@{break_info['price']:.2f}/线{break_info['line_price']:.2f}"
+        angle = line.get('angle')
+        slope = line.get('slope')
+        marker = (
+            f"上升趋势线跌破@{break_info['price']:.2f}/线{break_info['line_price']:.2f}"
+            f"|角度:{angle:.2f}°"
+            f"|斜率:{slope:.4f}"
+            f"|锚点1:{line['start']['date']}@{line['start']['price']:.2f}"
+            f"|锚点2:{line['end']['date']}@{line['end']['price']:.2f}"
+        )
         date_markers = markers.setdefault(break_info['date'], [])
         if marker not in date_markers:
             date_markers.append(marker)
@@ -1102,7 +1189,15 @@ def calculate_trend_break_markers(dates, prices, market_states):
         break_info = line.get('break')
         if not break_info:
             continue
-        marker = f"下降趋势线上破@{break_info['price']:.2f}/线{break_info['line_price']:.2f}"
+        angle = line.get('angle')
+        slope = line.get('slope')
+        marker = (
+            f"下降趋势线上破@{break_info['price']:.2f}/线{break_info['line_price']:.2f}"
+            f"|角度:{angle:.2f}°"
+            f"|斜率:{slope:.4f}"
+            f"|锚点1:{line['start']['date']}@{line['start']['price']:.2f}"
+            f"|锚点2:{line['end']['date']}@{line['end']['price']:.2f}"
+        )
         date_markers = markers.setdefault(break_info['date'], [])
         if marker not in date_markers:
             date_markers.append(marker)
@@ -1139,11 +1234,20 @@ def annotate_output_file_with_trend_breaks(filepath='out_put.txt'):
                 f.write('\n'.join(cleaned_lines))
         return markers
 
+    trend_event_markers = {
+        "上升趋势线跌破卖出@",
+        "上升趋势线跌破卖出",
+        "下降趋势线上破买入@",
+        "下降趋势线上破买入",
+    }
+
     annotated_lines = []
     for line in cleaned_lines:
         parts = line.split()
         if len(parts) >= 10 and parts[1] in markers:
-            line = f"{line} 趋势破位:{';'.join(markers[parts[1]])}"
+            # 只给买入/卖出事件行补充破位标记，避免在止损或普通K线行误填充历史锚点
+            if any(tag in line for tag in trend_event_markers):
+                line = f"{line} 趋势破位:{';'.join(markers[parts[1]])}"
         annotated_lines.append(line)
 
     with open(filepath, 'w', encoding='utf-8') as f:
