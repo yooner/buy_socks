@@ -9,7 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple
 
-STOCK_CODE = "601138"
+STOCK_CODE = "600531"
 CACHE_DIR = "cache"
 CACHE_EXPIRY_DAYS = 1
 INITIAL_CAPITAL_EXPORT = 100000
@@ -63,7 +63,7 @@ def get_year_range(years: int) -> Tuple[int, int]:
 def get_daily_cache_path(stock_code: str) -> str:
     return os.path.join(CACHE_DIR, f"{stock_code}_daily.json")
 
-def get_daily_data_from_cache(stock_code: str) -> Optional[pd.DataFrame]:
+def get_daily_data_from_cache(stock_code: str, allow_expired: bool = False) -> Optional[pd.DataFrame]:
     cache_path = get_daily_cache_path(stock_code)
     if not os.path.exists(cache_path):
         return None
@@ -71,11 +71,11 @@ def get_daily_data_from_cache(stock_code: str) -> Optional[pd.DataFrame]:
     try:
         with open(cache_path, 'r', encoding='utf-8') as f:
             cache_data = json.load(f)
-        
+
         cache_time = datetime.fromisoformat(cache_data['cache_time'])
-        if (datetime.now() - cache_time).days >= CACHE_EXPIRY_DAYS:
+        if (not allow_expired) and (datetime.now() - cache_time).days >= CACHE_EXPIRY_DAYS:
             return None
-        
+
         return pd.DataFrame(cache_data['daily_data'])
     except:
         return None
@@ -143,12 +143,16 @@ def aggregate_weekly(daily_data: pd.DataFrame) -> pd.DataFrame:
     
     return weekly_data
 
-def ensure_daily_cache(stock_code: str = STOCK_CODE, max_retries: int = 5, retry_delay: int = 3) -> pd.DataFrame:
+
+def ensure_daily_cache(stock_code: str = STOCK_CODE) -> pd.DataFrame:
     cached = get_daily_data_from_cache(stock_code)
     if cached is not None:
         print(f"缓存已有 {stock_code} 日线数据")
         return cached
-    
+
+    # 没有有效缓存时，尝试从网络拉取；失败则回退到最近缓存（日线）
+    stale_cached = get_daily_data_from_cache(stock_code, allow_expired=True)
+
     print(f"从 tushare 获取 {stock_code} 日线数据...")
     if END_DATE is None:
         end = datetime.now()
@@ -157,86 +161,81 @@ def ensure_daily_cache(stock_code: str = STOCK_CODE, max_retries: int = 5, retry
     start = end - timedelta(days=CACHE_DAYS)
     start_date = start.strftime("%Y%m%d")
     end_date = end.strftime("%Y%m%d")
-    
-    session = requests.Session()
-    retries = Retry(total=max_retries, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 429])
-    session.mount('http://', HTTPAdapter(max_retries=retries))
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"尝试第 {attempt}/{max_retries} 次请求...")
-            
-            ts_code = f"{stock_code}.SH" if stock_code.startswith("6") else f"{stock_code}.SZ"
-            
-            if pro is None:
-                daily_data = ts.pro_api().daily(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                adj_factor = ts.pro_api().adj_factor(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            else:
-                daily_data = pro.daily(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                adj_factor = pro.adj_factor(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            break
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            print(f"连接失败: {e}")
-            if attempt < max_retries:
-                wait_time = retry_delay * attempt
-                print(f"等待 {wait_time} 秒后重试...")
-                time.sleep(wait_time)
-            else:
-                print("重试次数耗尽，抛出异常")
-                raise e
-    
-    daily_data['date'] = pd.to_datetime(daily_data['trade_date'])
-    
+
+    ts_code = f"{stock_code}.SH" if stock_code.startswith("6") else f"{stock_code}.SZ"
+
+    try:
+        print("尝试请求 tushare...")
+        if pro is None:
+            daily_data = ts.pro_api().daily(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date
+            )
+            adj_factor = ts.pro_api().adj_factor(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date
+            )
+        else:
+            daily_data = pro.daily(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date
+            )
+            adj_factor = pro.adj_factor(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date
+            )
+    except Exception:
+        if stale_cached is not None and not stale_cached.empty:
+            print("Tushare 拉取失败，已回退到本地缓存（日线）继续回测")
+            return stale_cached
+        raise
+
+    if daily_data is None or len(daily_data) == 0:
+        if stale_cached is not None and not stale_cached.empty:
+            print("Tushare 返回空数据，已回退到本地缓存（日线）继续回测")
+            return stale_cached
+        raise RuntimeError("Tushare 获取日线失败且无可用缓存")
+
+    daily_data["date"] = pd.to_datetime(daily_data["trade_date"])
+
     # 合并复权因子
     if adj_factor is not None and not adj_factor.empty:
-        adj_factor['trade_date'] = adj_factor['trade_date'].astype(str)
-        daily_data['trade_date'] = daily_data['trade_date'].astype(str)
+        adj_factor["trade_date"] = adj_factor["trade_date"].astype(str)
+        daily_data["trade_date"] = daily_data["trade_date"].astype(str)
         daily_data = daily_data.merge(
-            adj_factor[['trade_date', 'adj_factor']], 
-            on='trade_date', 
-            how='left'
+            adj_factor[["trade_date", "adj_factor"]],
+            on="trade_date",
+            how="left"
         )
-        
+
         # 计算后复权价格（以最新交易日为基准）
         # 后复权价格 = 当日价格 × 当日复权因子 / 最新复权因子
-        latest_adj_factor = daily_data['adj_factor'].iloc[0]  # 最新日期在最前面
-        price_cols = ['open', 'close', 'high', 'low']
+        latest_adj_factor = daily_data["adj_factor"].iloc[0]  # 最新日期在最前面
+        price_cols = ["open", "close", "high", "low"]
         for col in price_cols:
             if col in daily_data.columns:
-                daily_data[col] = daily_data[col] * daily_data['adj_factor'] / latest_adj_factor
-    
-    if 'open' in daily_data.columns:
+                daily_data[col] = daily_data[col] * daily_data["adj_factor"] / latest_adj_factor
+
+    if "open" in daily_data.columns:
         daily_data.rename(columns={
-            'open': '开盘',
-            'close': '收盘',
-            'high': '最高',
-            'low': '最低',
-            'vol': '成交量'
+            "open": "开盘",
+            "close": "收盘",
+            "high": "最高",
+            "low": "最低",
+            "vol": "成交量"
         }, inplace=True)
-    
-    daily_data['week'] = daily_data['date'].dt.isocalendar().week
-    daily_data['year'] = daily_data['date'].dt.year
-    
+
+    daily_data["week"] = daily_data["date"].dt.isocalendar().week
+    daily_data["year"] = daily_data["date"].dt.year
+
     save_daily_to_cache(stock_code, daily_data)
-    
+
     return daily_data
+
 
 
 def get_weekly_data(
